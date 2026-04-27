@@ -9,7 +9,7 @@ gpu: A100-SXM4-40GB
 workload:
   pattern: concurrent_streaming
   concurrency: 8
-  eval_set: tedlium_streaming_30s
+  eval_set: librispeech_streaming_30s
   iterations: 3
   warmup_requests: 10
   request_timeout_seconds: 120

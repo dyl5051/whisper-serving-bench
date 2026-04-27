@@ -32,18 +32,47 @@ librispeech_test_clean:
   audio_column: audio
   text_column: text
 
-tedlium_streaming_30s:
+librispeech_streaming_30s:
   description: |
-    50 deterministically-sliced 30-second chunks from TED-LIUM v3 talks. Used
-    for the v1 concurrent-streaming workload. Uniform 30s length removes
-    encoder-padding as a confounding variable across frameworks. Each chunk
-    has the corresponding TED-LIUM reference transcript subset attached.
+    50 pseudo-30-second chunks built by greedily concatenating adjacent
+    LibriSpeech test-clean utterances from the same speaker until each chunk
+    reaches >=30s of audio. Used for the v1 concurrent-streaming workload.
+
+    Why this design: TED-LIUM was the original plan for this workload (more
+    realistic spontaneous speech), but TED-LIUM's per-utterance transcripts
+    don't align trivially to 30-second timestamp slices, which would have
+    forced us to either skip WER on the streaming cells or do word-level
+    timestamp alignment work. LibriSpeech utterance concatenation gives us
+    aligned references for free at the cost of slightly less realistic audio
+    (read audiobooks vs spontaneous TED talks). The right tradeoff for v1
+    where serving-framework comparison is the headline; TED-LIUM long-form
+    audio comes back in v2.
+
+    Chunks are >=30s, not exactly 30s — Whisper's encoder will handle the
+    overflow by chunking internally. Real chunk lengths are recorded in the
+    manifest's duration_seconds field; RTF is computed against actual length.
+  source: huggingface_datasets_concatenated
+  dataset: librispeech_asr
+  config: clean
+  split: test
+  audio_column: audio
+  text_column: text
+  group_by_column: speaker_id  # don't concatenate across speaker boundaries
+  target_seconds: 30.0
+  num_chunks: 50
+
+tedlium_streaming_30s_DEFERRED:
+  description: |
+    DEFERRED to v2. Originally the intended v1 streaming eval, but the
+    timestamp-to-utterance alignment work needed to attach references is
+    bigger than v1 has budget for. Keeping the entry here as a marker so
+    we don't forget the v2 task.
   source: huggingface_datasets_sliced
   dataset: LIUM/tedlium
   config: release3
   split: test
   chunk_seconds: 30
   num_chunks: 50
-  source_audio_seconds_min: 60  # only sample from talks at least this long
+  source_audio_seconds_min: 60
   audio_column: audio
   text_column: text

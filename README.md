@@ -24,7 +24,7 @@ Planned follow-ups, each its own release + writeup:
 
 ```bash
 # On a rented GPU box with NVIDIA drivers + Docker:
-git clone https://github.com/<your-username>/whisper-serving-bench
+git clone https://github.com/dyl5051/whisper-serving-bench
 cd whisper-serving-bench
 
 # Build the image (~10 min first time)
