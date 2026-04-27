@@ -89,9 +89,17 @@ def _prepare_hf_dataset(spec: dict, out_dir: Path) -> None:
     cleanly partition splits at the file level, so a non-streaming
     `load_dataset(..., split="test")` ends up downloading train splits too.
     Streaming mode is lazy: it only fetches rows we actually iterate.
+
+    We pass `decode=False` on the audio column so HF datasets hands us raw
+    bytes instead of trying to decode via torchcodec — torchcodec needs
+    FFmpeg shared libs that aren't present on every system. soundfile
+    handles WAV and FLAC (which is what LibriSpeech ships) natively without
+    that dep.
     """
+    import io
+
     import soundfile as sf
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     ds = load_dataset(
         spec["dataset"],
@@ -100,22 +108,24 @@ def _prepare_hf_dataset(spec: dict, out_dir: Path) -> None:
         streaming=True,
     )
 
+    audio_col = spec["audio_column"]
+    text_col = spec["text_column"]
+
+    ds = ds.cast_column(audio_col, Audio(decode=False))
+
     limit = spec.get("limit")
     if limit:
         ds = ds.take(limit)
 
-    audio_col = spec["audio_column"]
-    text_col = spec["text_column"]
     clips_dir = out_dir / "clips"
     clips_dir.mkdir(exist_ok=True)
 
     manifest_path = out_dir / "manifest.jsonl"
     with manifest_path.open("w") as mf:
         for i, row in enumerate(ds):
-            audio_data = row[audio_col]
-            # HF datasets returns audio as {"array": np.ndarray, "sampling_rate": int, "path": str}
-            arr = audio_data["array"]
-            sr = audio_data["sampling_rate"]
+            arr, sr = _decode_audio_row(row[audio_col])
+            if arr is None:
+                continue
             duration = len(arr) / sr
             clip_id = f"{i:06d}"
             wav_path = clips_dir / f"{clip_id}.wav"
@@ -131,6 +141,33 @@ def _prepare_hf_dataset(spec: dict, out_dir: Path) -> None:
                 )
                 + "\n"
             )
+
+
+def _decode_audio_row(audio_data: dict):
+    """Decode a row's audio dict (from Audio(decode=False)) to (ndarray, sample_rate).
+
+    Returns (None, None) if the row has no usable audio bytes — caller should skip.
+    """
+    import io
+
+    import soundfile as sf
+
+    if not audio_data:
+        return None, None
+    raw = audio_data.get("bytes")
+    path = audio_data.get("path")
+    if raw:
+        arr, sr = sf.read(io.BytesIO(raw))
+        return arr, sr
+    if path:
+        # Streaming sometimes hands us a remote path with no bytes attached;
+        # soundfile can read local files, but this branch is best-effort.
+        try:
+            arr, sr = sf.read(path)
+            return arr, sr
+        except Exception:  # noqa: BLE001
+            return None, None
+    return None, None
 
 
 def _prepare_hf_dataset_sliced(spec: dict, out_dir: Path) -> None:
@@ -153,7 +190,7 @@ def _prepare_hf_dataset_sliced(spec: dict, out_dir: Path) -> None:
     """
     import numpy as np
     import soundfile as sf
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     ds = load_dataset(
         spec["dataset"],
@@ -161,6 +198,7 @@ def _prepare_hf_dataset_sliced(spec: dict, out_dir: Path) -> None:
         split=spec["split"],
         streaming=True,
     )
+    ds = ds.cast_column(spec["audio_column"], Audio(decode=False))
 
     chunk_seconds = int(spec.get("chunk_seconds", 30))
     num_chunks = int(spec.get("num_chunks", 50))
@@ -176,9 +214,10 @@ def _prepare_hf_dataset_sliced(spec: dict, out_dir: Path) -> None:
         for row in ds:
             if chunks_written >= num_chunks:
                 break
-            audio_data = row[audio_col]
-            arr = np.asarray(audio_data["array"])
-            sr = audio_data["sampling_rate"]
+            arr, sr = _decode_audio_row(row[audio_col])
+            if arr is None:
+                continue
+            arr = np.asarray(arr)
             total_seconds = len(arr) / sr
             if total_seconds < min_seconds:
                 continue
@@ -233,7 +272,7 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
     """
     import numpy as np
     import soundfile as sf
-    from datasets import load_dataset
+    from datasets import Audio, load_dataset
 
     ds = load_dataset(
         spec["dataset"],
@@ -241,6 +280,7 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
         split=spec["split"],
         streaming=True,
     )
+    ds = ds.cast_column(spec["audio_column"], Audio(decode=False))
 
     target_seconds = float(spec.get("target_seconds", 30.0))
     num_chunks = int(spec.get("num_chunks", 50))
@@ -265,9 +305,10 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
             if chunks_written >= num_chunks:
                 break
 
-            audio_data = row[audio_col]
-            arr = np.asarray(audio_data["array"])
-            row_sr = audio_data["sampling_rate"]
+            arr, row_sr = _decode_audio_row(row[audio_col])
+            if arr is None:
+                continue
+            arr = np.asarray(arr)
             group_key = row[group_by] if group_by else "_all_"
 
             if group_key not in buffers:
