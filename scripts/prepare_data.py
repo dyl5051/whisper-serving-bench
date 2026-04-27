@@ -82,7 +82,14 @@ def main(
 
 
 def _prepare_hf_dataset(spec: dict, out_dir: Path) -> None:
-    """Materialize a HuggingFace dataset directly, one clip per row."""
+    """Materialize a HuggingFace dataset directly, one clip per row.
+
+    Uses streaming=True to avoid bulk-downloading the entire dataset config.
+    Some HF datasets (notably librispeech_asr post-parquet-conversion) don't
+    cleanly partition splits at the file level, so a non-streaming
+    `load_dataset(..., split="test")` ends up downloading train splits too.
+    Streaming mode is lazy: it only fetches rows we actually iterate.
+    """
     import soundfile as sf
     from datasets import load_dataset
 
@@ -90,12 +97,12 @@ def _prepare_hf_dataset(spec: dict, out_dir: Path) -> None:
         spec["dataset"],
         spec.get("config"),
         split=spec["split"],
-        trust_remote_code=True,
+        streaming=True,
     )
 
     limit = spec.get("limit")
     if limit:
-        ds = ds.select(range(min(limit, len(ds))))
+        ds = ds.take(limit)
 
     audio_col = spec["audio_column"]
     text_col = spec["text_column"]
@@ -152,7 +159,7 @@ def _prepare_hf_dataset_sliced(spec: dict, out_dir: Path) -> None:
         spec["dataset"],
         spec.get("config"),
         split=spec["split"],
-        trust_remote_code=True,
+        streaming=True,
     )
 
     chunk_seconds = int(spec.get("chunk_seconds", 30))
@@ -224,8 +231,6 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
     transcripts for WER but want chunks long enough that the encoder doesn't
     finish faster than the framework's per-request overhead can be measured.
     """
-    from collections import defaultdict
-
     import numpy as np
     import soundfile as sf
     from datasets import load_dataset
@@ -234,7 +239,7 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
         spec["dataset"],
         spec.get("config"),
         split=spec["split"],
-        trust_remote_code=True,
+        streaming=True,
     )
 
     target_seconds = float(spec.get("target_seconds", 30.0))
@@ -246,72 +251,72 @@ def _prepare_hf_dataset_concatenated(spec: dict, out_dir: Path) -> None:
     clips_dir = out_dir / "clips"
     clips_dir.mkdir(exist_ok=True)
 
-    # Group rows so we don't concatenate across speaker boundaries (which would
-    # produce unrealistic mid-clip voice changes that some frameworks might
-    # handle differently from real audio).
-    if group_by:
-        groups: dict = defaultdict(list)
-        for row in ds:
-            groups[row[group_by]].append(row)
-        # Process in deterministic order.
-        groups_list = [groups[k] for k in sorted(groups.keys())]
-    else:
-        groups_list = [list(ds)]
-
+    # Streaming-friendly grouping: we can't materialize all rows into per-speaker
+    # buckets up front (would defeat streaming). Instead we walk the stream and
+    # maintain a per-speaker buffer dict; each row gets appended to its speaker's
+    # buffer; whenever any speaker's buffer reaches target_seconds, emit it as a
+    # chunk and reset that buffer. Stop once num_chunks have been written.
+    buffers: dict = {}
     chunks_written = 0
     manifest_path = out_dir / "manifest.jsonl"
+
     with manifest_path.open("w") as mf:
-        for group in groups_list:
+        for row in ds:
             if chunks_written >= num_chunks:
                 break
 
-            buffer_audio: list = []
-            buffer_text_parts: list[str] = []
-            buffer_samples = 0
-            sr: int | None = None
+            audio_data = row[audio_col]
+            arr = np.asarray(audio_data["array"])
+            row_sr = audio_data["sampling_rate"]
+            group_key = row[group_by] if group_by else "_all_"
 
-            for row in group:
-                if chunks_written >= num_chunks:
-                    break
-                audio_data = row[audio_col]
-                arr = np.asarray(audio_data["array"])
-                row_sr = audio_data["sampling_rate"]
-                if sr is None:
-                    sr = row_sr
-                elif sr != row_sr:
-                    # Skip rows with mismatched sample rate within a group;
-                    # we don't resample on the fly.
-                    continue
+            if group_key not in buffers:
+                buffers[group_key] = {
+                    "audio": [],
+                    "text": [],
+                    "samples": 0,
+                    "sr": row_sr,
+                }
+            buf = buffers[group_key]
 
-                buffer_audio.append(arr)
-                buffer_text_parts.append(row[text_col])
-                buffer_samples += len(arr)
+            # Skip rows with mismatched sample rate within a group;
+            # we don't resample on the fly.
+            if buf["sr"] != row_sr:
+                continue
 
-                if buffer_samples / sr >= target_seconds:
-                    concatenated = np.concatenate(buffer_audio)
-                    clip_id = f"libri_concat_{chunks_written:04d}"
-                    wav_path = clips_dir / f"{clip_id}.wav"
-                    sf.write(wav_path, concatenated, sr, subtype="PCM_16")
-                    mf.write(
-                        json.dumps(
-                            {
-                                "clip_id": clip_id,
-                                "audio_path": f"clips/{clip_id}.wav",
-                                "duration_seconds": len(concatenated) / sr,
-                                "reference_text": " ".join(buffer_text_parts),
-                            }
-                        )
-                        + "\n"
+            buf["audio"].append(arr)
+            buf["text"].append(row[text_col])
+            buf["samples"] += len(arr)
+
+            if buf["samples"] / buf["sr"] >= target_seconds:
+                concatenated = np.concatenate(buf["audio"])
+                clip_id = f"libri_concat_{chunks_written:04d}"
+                wav_path = clips_dir / f"{clip_id}.wav"
+                sf.write(wav_path, concatenated, buf["sr"], subtype="PCM_16")
+                mf.write(
+                    json.dumps(
+                        {
+                            "clip_id": clip_id,
+                            "audio_path": f"clips/{clip_id}.wav",
+                            "duration_seconds": len(concatenated) / buf["sr"],
+                            "reference_text": " ".join(buf["text"]),
+                        }
                     )
-                    chunks_written += 1
-                    buffer_audio = []
-                    buffer_text_parts = []
-                    buffer_samples = 0
+                    + "\n"
+                )
+                chunks_written += 1
+                # Reset this speaker's buffer; other speakers' buffers persist.
+                buffers[group_key] = {
+                    "audio": [],
+                    "text": [],
+                    "samples": 0,
+                    "sr": row_sr,
+                }
 
     if chunks_written < num_chunks:
         click.echo(
             f"[warn] only produced {chunks_written}/{num_chunks} chunks — "
-            f"dataset may not have enough multi-utterance speakers to hit the target",
+            f"stream exhausted before target reached",
             err=True,
         )
 
