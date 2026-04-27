@@ -1,0 +1,49 @@
+# Eval set catalog. Consumed by scripts/prepare_data.py to materialize the
+# audio + manifests under data/<name>/. The benchmark harness reads only the
+# resulting manifests, never this file directly.
+#
+# Each entry's "source" determines how prepare_data.py builds it:
+#   - "huggingface_datasets": load via datasets.load_dataset, write WAV + manifest
+#   - "huggingface_datasets_sliced": load + slice into fixed-length chunks for the
+#     concurrent-streaming workload (where uniform input length matters)
+
+librispeech_test_clean_subset:
+  description: |
+    First 50 utterances of LibriSpeech test-clean. Used for fast smoke testing
+    the harness without paying the full ~5h transcribe cost. Not a real
+    benchmark eval set — full LibriSpeech test-clean is the published one.
+  source: huggingface_datasets
+  dataset: librispeech_asr
+  config: clean
+  split: test
+  limit: 50
+  audio_column: audio
+  text_column: text
+
+librispeech_test_clean:
+  description: |
+    Full LibriSpeech test-clean. ~5.4 hours, 2620 utterances, ~7s mean clip
+    length. The field's default ASR benchmark — using it makes our WER numbers
+    comparable to published Whisper benchmarks.
+  source: huggingface_datasets
+  dataset: librispeech_asr
+  config: clean
+  split: test
+  audio_column: audio
+  text_column: text
+
+tedlium_streaming_30s:
+  description: |
+    50 deterministically-sliced 30-second chunks from TED-LIUM v3 talks. Used
+    for the v1 concurrent-streaming workload. Uniform 30s length removes
+    encoder-padding as a confounding variable across frameworks. Each chunk
+    has the corresponding TED-LIUM reference transcript subset attached.
+  source: huggingface_datasets_sliced
+  dataset: LIUM/tedlium
+  config: release3
+  split: test
+  chunk_seconds: 30
+  num_chunks: 50
+  source_audio_seconds_min: 60  # only sample from talks at least this long
+  audio_column: audio
+  text_column: text

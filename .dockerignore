@@ -1,0 +1,21 @@
+# Don't ship local dev artifacts into the image
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+.idea/
+
+# Don't ship eval data — it's downloaded inside the container by prepare_data.py
+data/
+
+# Don't ship results
+results/
+
+# Docs are not needed at runtime
+docs/
+
+# Tests run separately
+tests/

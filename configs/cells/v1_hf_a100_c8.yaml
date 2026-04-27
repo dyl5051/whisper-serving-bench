@@ -1,0 +1,22 @@
+# Real v1 cell: HF baseline, A100, concurrency=8, full TED-LIUM streaming eval.
+# Mirror configs for c=1, 32, 64, 128 — same except for workload.concurrency.
+
+cell_id: v1_hf_a100_concurrent_8
+framework: hf
+model: openai/whisper-large-v3
+gpu: A100-SXM4-40GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 8
+  eval_set: tedlium_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 120
+
+adapter_config:
+  device: cuda
+  dtype: float16
+  chunk_length_s: 30
+  batch_size: 1
+  language: en

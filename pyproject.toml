@@ -1,0 +1,96 @@
+[project]
+name = "whisper-serving-bench"
+version = "0.1.0"
+description = "Reproducible benchmark of serving frameworks for Whisper inference"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "DK" }]
+
+# Core deps — needed by the harness regardless of which framework adapter is in use
+dependencies = [
+    # Audio I/O + resampling
+    "soundfile>=0.12.1",
+    "librosa>=0.10.2",
+    "numpy>=1.26,<2.0",  # pinned <2.0 because several ML libs still don't support numpy 2
+
+    # Eval data
+    "datasets>=2.20.0",
+    "huggingface-hub>=0.24.0",
+
+    # Text normalization + WER
+    # openai-whisper pulls torch — we accept that for the EnglishTextNormalizer.
+    # Could be replaced with a pure-Python copy of the normalizer if startup time matters.
+    "openai-whisper>=20231117",
+    "jiwer>=3.0.4",
+
+    # Configs + serialization
+    "pyyaml>=6.0.1",
+    "pydantic>=2.7.0",
+
+    # HTTP client (used by HTTP-based adapters: Triton, Ray Serve, vLLM server mode)
+    "httpx>=0.27.0",
+
+    # Orchestration
+    "click>=8.1.7",
+    "rich>=13.7.1",  # nicer console output during runs
+]
+
+[project.optional-dependencies]
+# Each adapter's heavy deps live in its own extra so the image for one framework
+# doesn't have to install all of them. Build framework-specific images by
+# selecting one extra: `pip install -e .[hf]`, `[faster-whisper]`, etc.
+hf = [
+    "transformers>=4.44.0",
+    "torch>=2.4.0",
+    "torchaudio>=2.4.0",
+    "accelerate>=0.33.0",
+]
+faster-whisper = [
+    "faster-whisper>=1.0.3",
+]
+vllm = [
+    # vLLM Whisper support landed in 0.6.x. Pin to a known-good version.
+    "vllm>=0.6.3",
+]
+ray-serve = [
+    "ray[serve]>=2.35.0",
+    "transformers>=4.44.0",
+    "torch>=2.4.0",
+    "torchaudio>=2.4.0",
+]
+triton = [
+    "tritonclient[all]>=2.48.0",
+]
+
+# Development / analysis
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.6.0",
+    "pandas>=2.2.0",
+    "matplotlib>=3.9.0",
+]
+
+[project.scripts]
+bench-prepare-data = "scripts.prepare_data:main"
+bench-run-cell = "scripts.run_cell:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bench", "adapters"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
