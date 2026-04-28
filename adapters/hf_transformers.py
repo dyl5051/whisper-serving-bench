@@ -78,6 +78,15 @@ class HfTransformersAdapter(FrameworkAdapter):
                 torch_dtype=dtype,
             ).to(self._device)
             model.eval()
+            # Whisper-large-v3 quirk: the model ships with a generation_config
+            # that has legacy forced_decoder_ids set. When you also pass
+            # language/task as generate() kwargs, the two paths conflict and
+            # can produce out-of-range token IDs that crash the embedding
+            # lookup with a CUDA assertion. Clear the stale config so only the
+            # modern kwarg path is active.
+            if hasattr(model, "generation_config"):
+                model.generation_config.forced_decoder_ids = None
+                model.generation_config.suppress_tokens = []
             return processor, model
 
         self._processor, self._model = await loop.run_in_executor(None, _build)
@@ -94,7 +103,9 @@ class HfTransformersAdapter(FrameworkAdapter):
         import soundfile as sf
         import torch
 
-        generate_kwargs: dict[str, Any] = {}
+        # max_new_tokens cap prevents runaway generation on noisy audio;
+        # 440 leaves headroom under Whisper's 448 max decoder length.
+        generate_kwargs: dict[str, Any] = {"max_new_tokens": 440}
         if self._language:
             generate_kwargs["language"] = self._language
             generate_kwargs["task"] = "transcribe"
