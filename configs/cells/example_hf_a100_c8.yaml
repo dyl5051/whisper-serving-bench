@@ -21,6 +21,4 @@ workload:
 adapter_config:
   device: cuda
   dtype: float16
-  chunk_length_s: 30
-  batch_size: 1  # baseline: no batching
   language: en
