@@ -1,0 +1,47 @@
+# Triton model config — Whisper via the Python backend.
+#
+# v1 deliberately uses max_batch_size: 0 (no batching) so this cell reflects
+# the "naive Triton wrapping" deployment story. Real Triton batching value
+# comes through TensorRT-LLM compilation, which lands in v1.1 — keeping that
+# comparison explicit ("easy path vs fast path") is part of the v1.1 writeup.
+
+name: "whisper"
+backend: "python"
+max_batch_size: 0
+
+input [
+  {
+    name: "AUDIO_BYTES"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+output [
+  {
+    name: "TEXT"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+# Parameters consumed by model.py at initialize() time.
+parameters: {
+  key: "MODEL_NAME",
+  value: { string_value: "openai/whisper-large-v3" }
+}
+parameters: {
+  key: "DTYPE",
+  value: { string_value: "float16" }
+}
+parameters: {
+  key: "LANGUAGE",
+  value: { string_value: "en" }
+}

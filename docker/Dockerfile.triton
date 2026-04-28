@@ -1,0 +1,63 @@
+# Triton image — built on NVIDIA's official Triton container with the
+# Python backend. We add our harness + transformers so model.py can load
+# Whisper inside Triton's Python env.
+#
+# Pinned to 24.09-py3 because that's the most recent Triton at time of
+# v1 design that ships PyTorch 2.4 (matches our base image's PyTorch).
+# Update both together.
+#
+# Build:
+#   docker build -t whisper-bench:triton -f docker/Dockerfile.triton .
+#   (does NOT depend on whisper-bench:base)
+#
+# Run:
+#   docker run --rm --gpus all \
+#       -v $(pwd)/data:/app/data \
+#       -v $(pwd)/results:/app/results \
+#       -p 8000:8000 -p 8001:8001 -p 8002:8002 \
+#       whisper-bench:triton \
+#       python scripts/run_cell.py configs/cells/v1_triton_a100_c8.yaml \
+#           --data-root /app/data --results-dir /app/results
+
+FROM nvcr.io/nvidia/tritonserver:24.09-py3
+
+# Triton container is comprehensive but missing a few of our deps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml README.md LICENSE /app/
+COPY bench /app/bench
+COPY adapters /app/adapters
+COPY scripts /app/scripts
+COPY configs /app/configs
+
+# Triton container has PyTorch already; install transformers and our harness
+# without re-resolving torch (use --no-deps for the harness install since our
+# pyproject pins torch>=2.4 and we trust the container's torch).
+RUN pip install --no-cache-dir \
+    "transformers>=4.44.0" \
+    "soundfile>=0.12.1" \
+    "librosa>=0.10.2" \
+    "datasets>=2.20.0" \
+    "huggingface-hub>=0.24.0" \
+    "openai-whisper>=20231117" \
+    "jiwer>=3.0.4" \
+    "pyyaml>=6.0.1" \
+    "pydantic>=2.7.0" \
+    "httpx>=0.27.0" \
+    "click>=8.1.7" \
+    "rich>=13.7.1" \
+    "tritonclient[all]>=2.48.0" && \
+    pip install --no-cache-dir --no-deps -e .
+
+ARG GIT_SHA=unknown
+ENV BENCH_GIT_SHA=${GIT_SHA}
+
+# Override Triton's default ENTRYPOINT (which auto-launches tritonserver).
+# Our adapter spawns tritonserver itself with the right model repository.
+ENTRYPOINT []
+CMD ["/bin/bash"]

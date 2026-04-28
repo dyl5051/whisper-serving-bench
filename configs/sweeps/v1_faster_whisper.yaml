@@ -1,0 +1,21 @@
+# Sweep: faster-whisper across the v1 grid (5 concurrencies × 2 GPUs = 10 cells).
+# Run on a Pod with the appropriate GPU; the sweep runner skips cells that already
+# have results so you can do A100 in one session and L4 in the next.
+
+name: v1_faster_whisper
+description: |
+  faster-whisper / whisper-large-v3 / LibriSpeech streaming-30s eval, swept across
+  concurrency {1, 8, 32, 64, 128} on A100-SXM4-80GB and L4. 10 cells total.
+  Single framework slice of the v1 matrix.
+
+cells:
+  - configs/cells/v1_fw_a100_c1.yaml
+  - configs/cells/v1_fw_a100_c8.yaml
+  - configs/cells/v1_fw_a100_c32.yaml
+  - configs/cells/v1_fw_a100_c64.yaml
+  - configs/cells/v1_fw_a100_c128.yaml
+  - configs/cells/v1_fw_l4_c1.yaml
+  - configs/cells/v1_fw_l4_c8.yaml
+  - configs/cells/v1_fw_l4_c32.yaml
+  - configs/cells/v1_fw_l4_c64.yaml
+  - configs/cells/v1_fw_l4_c128.yaml

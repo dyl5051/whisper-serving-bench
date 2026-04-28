@@ -1,0 +1,30 @@
+# Cloud GPU pricing snapshots used by scripts/analyze.py to compute
+# cost-per-audio-hour. Update these from the provider's current rate card
+# before publishing results. Pricing is USD per GPU-hour.
+#
+# We use on-demand pricing as the default (predictable, what most teams pay).
+# Spot pricing is informational — it's what you'd pay with eviction risk.
+
+last_updated: "2026-04-28"
+provider: runpod
+notes: |
+  RunPod Secure Cloud on-demand. Prices vary by region (US-WA-1 used as
+  representative). Spot prices fluctuate hourly; the values here were
+  observed during the v1 sweep but should not be cited as current.
+
+gpus:
+  A100-SXM4-40GB:
+    on_demand_usd_per_hour: 1.10
+    spot_usd_per_hour: 0.65
+  A100-SXM4-80GB:
+    on_demand_usd_per_hour: 1.39
+    spot_usd_per_hour: 0.85
+  L4:
+    on_demand_usd_per_hour: 0.60
+    spot_usd_per_hour: 0.35
+  T4:
+    on_demand_usd_per_hour: 0.35
+    spot_usd_per_hour: 0.20
+  H100-SXM5-80GB:
+    on_demand_usd_per_hour: 2.50
+    spot_usd_per_hour: 1.50

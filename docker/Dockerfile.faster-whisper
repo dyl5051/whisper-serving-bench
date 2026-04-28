@@ -1,0 +1,21 @@
+# faster-whisper image — extends the base with the CTranslate2-based
+# faster-whisper library. No FFmpeg or torchcodec required; soundfile
+# (already in base) handles WAV/FLAC natively.
+#
+# Build:
+#   docker build -t whisper-bench:base .                                   # base first
+#   docker build -t whisper-bench:faster-whisper -f docker/Dockerfile.faster-whisper .
+#
+# Run:
+#   docker run --rm --gpus all \
+#       -v $(pwd)/data:/app/data \
+#       -v $(pwd)/results:/app/results \
+#       whisper-bench:faster-whisper \
+#       python scripts/run_cell.py configs/cells/v1_fw_a100_c8.yaml \
+#           --data-root /app/data --results-dir /app/results
+
+FROM whisper-bench:base
+
+RUN pip install --no-cache-dir -e ".[faster-whisper]"
+
+CMD ["/bin/bash"]

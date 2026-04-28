@@ -1,0 +1,24 @@
+# Ray Serve image — extends base with ray[serve]. Reuses the base's HF
+# Transformers + soundfile setup since the Ray Serve deployment uses HF
+# under the hood for tensor-batched inference.
+#
+# Build:
+#   docker build -t whisper-bench:base .
+#   docker build -t whisper-bench:ray-serve -f docker/Dockerfile.ray-serve .
+#
+# Run:
+#   docker run --rm --gpus all \
+#       -v $(pwd)/data:/app/data \
+#       -v $(pwd)/results:/app/results \
+#       whisper-bench:ray-serve \
+#       python scripts/run_cell.py configs/cells/v1_ray_serve_a100_c8.yaml \
+#           --data-root /app/data --results-dir /app/results
+
+FROM whisper-bench:base
+
+RUN pip install --no-cache-dir -e ".[ray-serve]"
+
+# Ray's dashboard / cluster ports — exposed for inspection if needed.
+EXPOSE 8265 8000 6379
+
+CMD ["/bin/bash"]

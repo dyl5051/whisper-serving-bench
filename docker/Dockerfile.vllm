@@ -1,0 +1,57 @@
+# vLLM image — built ON TOP of the official vLLM container so we get the
+# exact PyTorch + CUDA + vLLM version triple that the vLLM team has tested.
+# Trying to install vLLM into our base image risks PyTorch ABI mismatches
+# (we hit this with torchcodec in session 1).
+#
+# Build:
+#   docker build -t whisper-bench:vllm -f docker/Dockerfile.vllm .
+#   (does NOT depend on whisper-bench:base — uses vLLM's container as base)
+#
+# Run:
+#   docker run --rm --gpus all \
+#       -v $(pwd)/data:/app/data \
+#       -v $(pwd)/results:/app/results \
+#       whisper-bench:vllm \
+#       python scripts/run_cell.py configs/cells/v1_vllm_a100_c8.yaml \
+#           --data-root /app/data --results-dir /app/results
+
+FROM vllm/vllm-openai:v0.7.0
+
+# Add the system deps the harness needs (vLLM container is minimal).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy pyproject + source. We install with --no-deps where possible to avoid
+# pip resolving torch/cuda away from what vLLM ships.
+COPY pyproject.toml README.md LICENSE /app/
+COPY bench /app/bench
+COPY adapters /app/adapters
+COPY scripts /app/scripts
+COPY configs /app/configs
+
+# Install harness deps explicitly without touching torch (which vLLM owns).
+RUN pip install --no-cache-dir \
+    "soundfile>=0.12.1" \
+    "librosa>=0.10.2" \
+    "datasets>=2.20.0" \
+    "huggingface-hub>=0.24.0" \
+    "openai-whisper>=20231117" \
+    "jiwer>=3.0.4" \
+    "pyyaml>=6.0.1" \
+    "pydantic>=2.7.0" \
+    "httpx>=0.27.0" \
+    "click>=8.1.7" \
+    "rich>=13.7.1" && \
+    pip install --no-cache-dir --no-deps -e .
+
+ARG GIT_SHA=unknown
+ENV BENCH_GIT_SHA=${GIT_SHA}
+
+# vLLM container has its own ENTRYPOINT for serving; override.
+ENTRYPOINT []
+CMD ["/bin/bash"]

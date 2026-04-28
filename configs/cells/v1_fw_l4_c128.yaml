@@ -1,0 +1,21 @@
+# v1: faster-whisper, L4, concurrency=128. May OOM at this concurrency on the
+# 24GB card; if so the cell is recorded as 'unsupported' and we report it as a
+# finding (the L4's memory is the bottleneck, not its compute).
+cell_id: v1_fw_l4_concurrent_128
+framework: faster_whisper
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 128
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 480
+
+adapter_config:
+  device: cuda
+  compute_type: float16
+  language: en
+  beam_size: 5
