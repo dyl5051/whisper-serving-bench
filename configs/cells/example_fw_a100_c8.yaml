@@ -1,0 +1,24 @@
+# faster-whisper smoke test: small eval set, 8 concurrent workers, A100.
+# Use this to validate the harness end-to-end with the faster-whisper adapter.
+#
+# Run with:
+#   python scripts/run_cell.py configs/cells/example_fw_a100_c8.yaml
+
+cell_id: fw_a100_concurrent_8_smoke
+framework: faster_whisper
+model: openai/whisper-large-v3   # canonical name; adapter translates to "large-v3"
+gpu: A100-SXM4-80GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 8
+  eval_set: librispeech_test_clean_subset
+  iterations: 1
+  warmup_requests: 5
+  request_timeout_seconds: 60
+
+adapter_config:
+  device: cuda
+  compute_type: float16
+  language: en
+  beam_size: 5
