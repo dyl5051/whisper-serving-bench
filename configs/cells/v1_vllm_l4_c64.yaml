@@ -1,0 +1,21 @@
+# v1: vLLM, L4, concurrency=64. At the limit of vLLM's max_num_seqs=64.
+cell_id: v1_vllm_l4_concurrent_64
+framework: vllm
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 64
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 360
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 64
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240

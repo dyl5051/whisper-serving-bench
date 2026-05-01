@@ -1,0 +1,24 @@
+# Sweep: vLLM × L4 × all 5 concurrencies. Same audio, model, eval as the
+# faster-whisper L4 row, so direct comparison is valid. Shows whether
+# vLLM's continuous batching extracts more throughput than faster-whisper
+# at the same concurrencies.
+
+name: v1_vllm_l4
+description: |
+  vLLM / whisper-large-v3 / LibriSpeech streaming-30s eval, swept across
+  concurrency {1, 8, 32, 64, 128} on L4. 5 cells.
+
+  IMPORTANT: vLLM's Whisper implementation does NOT include the standard
+  ASR safeguards (compression_ratio_threshold, no_speech_threshold,
+  temperature fallback) that faster-whisper applies. As a result, vLLM
+  hallucinates on short clips with silence. The 30-second pseudo-clips in
+  this eval are less affected than the 7s clips we used in the smoke test,
+  but expect WER to still be elevated vs faster-whisper for the same model.
+  This is itself a finding for the writeup.
+
+cells:
+  - configs/cells/v1_vllm_l4_c1.yaml
+  - configs/cells/v1_vllm_l4_c8.yaml
+  - configs/cells/v1_vllm_l4_c32.yaml
+  - configs/cells/v1_vllm_l4_c64.yaml
+  - configs/cells/v1_vllm_l4_c128.yaml

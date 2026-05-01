@@ -1,0 +1,22 @@
+# v1: vLLM, L4, concurrency=128. Above max_num_seqs=64 so vLLM will queue
+# the overflow. KV cache at this concurrency may approach L4's 24 GB limit.
+cell_id: v1_vllm_l4_concurrent_128
+framework: vllm
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 128
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 480
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 128
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240
