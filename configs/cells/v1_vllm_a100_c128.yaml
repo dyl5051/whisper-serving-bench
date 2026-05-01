@@ -1,0 +1,22 @@
+# v1: vLLM, A100 SXM 80GB, concurrency=128. A100 has 80 GB so plenty of
+# KV cache headroom even at this concurrency.
+cell_id: v1_vllm_a100_concurrent_128
+framework: vllm
+model: openai/whisper-large-v3
+gpu: A100-SXM4-80GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 128
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 360
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 128
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240

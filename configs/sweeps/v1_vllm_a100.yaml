@@ -1,0 +1,20 @@
+# Sweep: vLLM × A100 SXM 80GB × all 5 concurrencies. Companion to the
+# v1_vllm_l4 sweep — confirms whether vLLM's throughput-vs-quality story
+# holds on the larger GPU. Same hallucination issue is expected (it's a
+# vLLM Whisper integration issue, not a hardware issue).
+
+name: v1_vllm_a100
+description: |
+  vLLM / whisper-large-v3 / LibriSpeech streaming-30s eval, swept across
+  concurrency {1, 8, 32, 64, 128} on A100 SXM 80GB. 5 cells.
+
+  Expect throughput to be substantially better than L4 (faster compute +
+  more KV cache headroom) but WER to remain elevated (50-116% range based
+  on L4 results) because vLLM's Whisper implementation lacks ASR safeguards.
+
+cells:
+  - configs/cells/v1_vllm_a100_c1.yaml
+  - configs/cells/v1_vllm_a100_c8.yaml
+  - configs/cells/v1_vllm_a100_c32.yaml
+  - configs/cells/v1_vllm_a100_c64.yaml
+  - configs/cells/v1_vllm_a100_c128.yaml
