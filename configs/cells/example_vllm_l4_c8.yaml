@@ -1,0 +1,24 @@
+# vLLM smoke test on L4: small eval set, concurrency=8.
+# Validates that vLLM's Whisper support works end-to-end on this Pod
+# before committing to the full sweep.
+
+cell_id: vllm_l4_concurrent_8_smoke
+framework: vllm
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 8
+  eval_set: librispeech_test_clean_subset
+  iterations: 1
+  warmup_requests: 5
+  request_timeout_seconds: 120
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 64
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240
