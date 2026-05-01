@@ -100,9 +100,11 @@ class VllmAdapter(FrameworkAdapter):
             str(self._gpu_memory_utilization),
             "--served-model-name",
             self._served_model_name,
-            # Whisper is multimodal; vLLM needs to know.
-            "--task",
-            "transcription",
+            # Note: older vLLM versions required `--task transcription` for Whisper.
+            # vLLM >=0.10ish removed this — the engine auto-detects task type from
+            # the model architecture. If your vLLM version errors with "unrecognized
+            # arguments: --task", update vllm AND remove this line. If your version
+            # requires --task explicitly, add it back here.
         ]
         print(f"[VllmAdapter] launching: {' '.join(cmd)}")
         # Pipe stdout+stderr to our stdout so harness logs include vLLM's startup chatter.
