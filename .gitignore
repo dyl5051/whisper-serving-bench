@@ -63,3 +63,9 @@ logs/
 
 # OS
 Thumbs.db
+
+# Secrets / credentials
+.env
+.env.*
+*.pem
+.aws-credentials
