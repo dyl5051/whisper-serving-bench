@@ -152,7 +152,15 @@ class VllmAdapter(FrameworkAdapter):
             audio_bytes = f.read()
 
         files = {"file": (clip.audio_path.name, audio_bytes, "audio/wav")}
-        data: dict[str, str] = {"model": self._served_model_name}
+        data: dict[str, str] = {
+            "model": self._served_model_name,
+            # temperature=0 forces greedy decoding. Whisper's default temperature
+            # fallback (try higher temps if compression ratio is too high) helps
+            # with repetition loops, but vLLM doesn't implement that fallback.
+            # Greedy at least removes one source of randomness.
+            "temperature": "0",
+            "response_format": "json",
+        }
         if self._language:
             data["language"] = self._language
 
