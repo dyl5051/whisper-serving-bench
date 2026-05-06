@@ -1,139 +1,112 @@
-# Next session checklist (2026-05-05)
+# Next session checklist (2026-05-06)
 
-Pick up mid-flight. Today's plan: recover A100 per-cell JSONs from the network volume, re-run analyze.py over the now-complete L4+A100 dataset, then start the HF Transformers sweep. ~2 sessions of work; you're about to do step 1.
+Pick up mid-flight. Today (May 5) we brought the HF baseline up: shipped the L4 sweep cleanly, hit a noisy-neighbor A100 host on the first attempt, quarantined the poisoned smoke-test data, and stopped before publishing nonsense numbers. Tomorrow: redeploy A100 on a different host, run the sweep, get to 30/50 cells.
 
 ## Where we are right now
 
-- `inquisitive_coral_bobolink` (volume `b8c835d0j0`, US-MO-1) is **alive and intact**.
-- All 10 A100 per-cell JSONs are sitting at `s3://b8c835d0j0/data/results/` — verified by `aws s3 ls`. They were never extracted in session 5; commit `add2024` only added the session notes describing the recovery, not the data itself.
-- New RunPod S3 API key generated and saved to `~/.aws/credentials` as profile `runpod`.
-- Profile region must be `us-mo-1` (RunPod validates region matches endpoint, unlike AWS S3 proper).
-- The two empty placeholder dirs `results/raw/a100-pull/` and `results/raw/a100-pod-pull/` are leftover from a half-started extraction on May 2 — clean these up.
+**Done in session 6:**
+- HF Transformers adapter is functional. Two non-trivial fixes landed (committed in `892bcc1`):
+  - **Long-form generation** via `return_timestamps=True` + `truncation=False` + `return_attention_mask=True`. Without this, clips >30s were silently truncated, inflating WER to ~32%. Eval set averages 35.5s, max 46s.
+  - **Concurrency lock** (`threading.Lock`) around `model.generate()`. PyTorch's generate isn't thread-safe; concurrent calls crashed the GPU with device-side asserts at c≥8. Lock-serializing produces the realistic naive-baseline behavior (N submissions queue through one GPU). That serialization is exactly the value gap batched/replicated frameworks fill.
+- HF L4 sweep complete (5/5 cells, all healthy):
+  - WER: **1.44% across all concurrencies** (better than faster-whisper's 3-4%).
+  - RTF: **identical at ~0.044 across all concurrencies** — concurrency buys nothing because the lock serializes everything.
+  - p95 latency scales linearly: **1.96s @ c=1 → 209s @ c=128**.
+  - GPU saturated at ~92% from c=1.
+- Repo + adapter + 12 YAMLs + methodology update committed and pushed to `origin/main` (commit `892bcc1`).
+- Result JSONs in `results/raw/` (Mac local, gitignored) and at `s3://b8c835d0j0/data/results/` for durability.
+- New volume conveniences (saves time on every future pod redeploy):
+  - `/workspace/init_pod.sh` — one-shot bootstrap: SSH keys + apt + pip + transformers pin + HF_HOME persistence.
+  - `/workspace/.ssh/authorized_keys` — persistent copy of pod's authorized_keys so future pods skip the curl-keys dance.
 
-## Step 1: pull A100 JSONs (~5 min, $0)
+**Stopped here because:**
+- First A100 pod (deploy 2026-05-05, IP 64.247.196.124) landed on a noisy host. Symptoms: load avg 10+, `nvidia-smi` queries timing out >2s, our python at 448% CPU but GPU only 31% util, c=1 took 532s vs L4's 275s. We were CPU-starved by neighbors.
+- Result is quarantined as `s3://b8c835d0j0/data/results/v1_hf_a100_concurrent_1.POISONED-noisy-host.json` (and the corresponding log at `/workspace/smoke_a100.POISONED-noisy-host.log`). Do not analyze it; it's kept only for post-mortem.
 
-```bash
-cd "/Users/dyl5051/Documents/Claude/Projects/Serving Frameworks"
+## Step 1: deploy a fresh A100 (~5 min, ~$0.05)
 
-aws s3 --profile runpod \
-  --endpoint-url https://s3api-us-mo-1.runpod.io \
-  cp s3://b8c835d0j0/data/results/ results/raw/ \
-  --recursive --exclude "*" --include "v1_*_a100_concurrent_*.json"
-```
+1. RunPod console → deploy A100 SXM4-80GB in **US-MO-1** with `b8c835d0j0` attached. Container disk ≥30GB. Hopefully a different physical host than the May-5 deploy.
+2. Open the pod's web terminal. Run **one** command:
+   ```bash
+   bash /workspace/init_pod.sh
+   ```
+   This restores SSH authorized_keys, installs apt + pip deps, pins `transformers==4.46.3`, persists `HF_HOME=/workspace/data/hf_cache`. ~3-5 min.
+3. Paste the new SSH command into Claude. SSH from Mac will work because `init_pod.sh` repopulates `/root/.ssh/authorized_keys` from `/workspace/.ssh/authorized_keys`.
 
-Should drop 10 files into `results/raw/`:
-- `v1_fw_a100_concurrent_{1,8,32,64,128}.json` (~90-130 KB each)
-- `v1_vllm_a100_concurrent_{1,8,32,64,128}.json` (~62-120 KB each)
+## Step 2: smoke-test SANITY CHECK (~3 min)
 
-Sanity-check: `ls results/raw/v1_*a100*.json | wc -l` should print 10. Spot-check one with `head` and confirm it has the same shape (`cell_config`, `requests`, etc.) as the L4 cells in `results/raw/v1_fw_l4_concurrent_1.json`.
-
-## Step 2: cleanup + commit
-
-```bash
-# Obsolete per session-5 notes — replaced by the new per-cell JSONs
-git rm results/raw/sweep_v1_faster_whisper_a100.json
-
-# Empty placeholder dirs from the abandoned May 2 pull attempt
-rmdir results/raw/a100-pull results/raw/a100-pod-pull 2>/dev/null
-
-git add results/raw/v1_*a100*.json
-git status  # confirm only the 10 new JSONs + the deletion
-git commit -m "Recover A100 per-cell JSONs (faster-whisper + vLLM) from inquisitive_coral_bobolink
-
-Sweeps were run in session 5 onto the US-MO-1 network volume but never
-extracted. Pulled today via the S3 API. Replaces the stale aggregate
-sweep_v1_faster_whisper_a100.json which was reconstructed from terminal
-output after the original session-3 detail JSONs were lost."
-```
-
-## Step 3: re-run analyze.py over the combined L4+A100 dataset
+This is new and important — the noisy-host episode is a real risk. Before launching the full sweep, run the c=1 smoke test and **sanity-check the wall time**:
 
 ```bash
-python scripts/analyze.py \
-  --raw-dir results/raw \
-  --output-dir results/published/v1_partial
-```
-
-(Decide whether to overwrite `results/published/l4_only/` or keep it as a snapshot. My lean: leave `l4_only/` alone as a historical artifact, write fresh output to `v1_partial/` since v1 isn't done yet — once HF lands and we ship v1, that becomes `results/published/v1/`.)
-
-You'll get `v1_summary.csv` and `v1_decision_matrix.md` covering 20 cells: faster-whisper × {L4, A100} × 5 (all healthy) + vLLM × {L4, A100} × 5 (5 cells with broken WER, but the brokenness is itself the headline finding).
-
-## Step 4: HF Transformers sweep prep
-
-This is the meaningful next adapter to bring up. HF Transformers is the **baseline** — without it, you can't credibly claim "faster-whisper is Nx faster than serving Whisper raw" in the writeup.
-
-Existing assets:
-- `adapters/hf_transformers.py` — adapter is implemented (~156 lines)
-- `configs/cells/example_hf_a100_c8.yaml` — only 1 HF cell config exists
-
-Need to create 9 more cell YAMLs (mirror the structure of `configs/cells/v1_fw_*.yaml`):
-- `v1_hf_l4_concurrent_{1,8,32,64,128}.yaml` (5 cells)
-- `v1_hf_a100_concurrent_{1,32,64,128}.yaml` (4 cells — A100/c=8 already exists as `example_hf_a100_c8.yaml`; either rename it to fit the v1_* convention or add a sibling)
-
-Then a sweep YAML for each GPU (mirror `configs/sweeps/v1_faster_whisper.yaml`):
-- `configs/sweeps/v1_hf_l4.yaml`
-- `configs/sweeps/v1_hf_a100.yaml`
-
-**Critical constraint from prior debugging:** the HF adapter must NOT use `transformers.pipeline()` — it's fragile on Whisper specifically (torchcodec/ffmpeg saga from session 1). Use direct `model.generate` + `soundfile` audio loading. The current adapter should already do this; verify before launching the sweep.
-
-## Step 5: smoke-test HF on Pod, then run the sweeps
-
-Spin up a small L4 Pod (~$0.60/hr) with the `inquisitive_coral_bobolink` volume attached. Build the base Dockerfile (no separate framework image needed for HF — it shares the base):
-
-```bash
-docker build -t whisper-bench:base .
-```
-
-Run a single c=1 cell as a smoke test:
-
-```bash
-python scripts/run_cell.py configs/cells/v1_hf_l4_concurrent_1.yaml \
+export HF_HOME=/workspace/data/hf_cache
+cd /workspace/whisper-serving-bench
+git pull   # pick up any session-7 commits
+python scripts/run_cell.py configs/cells/v1_hf_a100_c1.yaml \
     --data-root /workspace/data \
     --results-dir /workspace/data/results
 ```
 
-Confirm it produces a healthy results JSON before launching the full sweep. Once it does:
+**Expected wall time on a healthy A100 host: ~120-180s** (L4 was 275s; A100 should be ~1.5-2× faster per request).
+
+- ≤200s: healthy host, proceed to sweep.
+- 200-300s: marginal, retry once before giving up.
+- ≥300s: noisy host. **Stop, redeploy, try again.** Do not run the full sweep on a poisoned host — the 22 minutes of nonsense numbers will need to be discarded.
+
+Also watch `dmesg`-level signals: `[GpuTelemetrySampler] sample failed` lines in the harness output mean nvidia-smi is timing out, which means PCIe/driver contention.
+
+## Step 3: full A100 sweep (~12-18 min on a healthy host)
 
 ```bash
-tmux new -s hf_sweep
-python scripts/run_sweep.py configs/sweeps/v1_hf_l4.yaml \
+tmux new -s hf_a100
+python scripts/run_sweep.py configs/sweeps/v1_hf_a100.yaml \
     --data-root /workspace/data \
-    --results-dir /workspace/data/results
+    --results-dir /workspace/data/results \
+    --force   # overwrites the c=1 smoke-test JSON for consistency with the lock-aware adapter
 ```
 
 (Caffeinate from the Mac side: `caffeinate -dimsu -t 7200 &`)
 
-After L4 completes, redeploy onto an A100 (any region with availability) and run `v1_hf_a100.yaml`. **S3 the JSONs out before tearing down each Pod** — don't repeat the session-3 mistake.
+5 cells, expected ~140-180s each on A100 (vs L4's 273s) since lock-serialization means the headline doesn't change but each request is faster.
 
-## Step 6: pull HF results, commit, re-run analyze
+## Step 4: pull, S3, commit, push
 
+The pod writes to `/workspace/data/results/`, which is auto-visible at `s3://b8c835d0j0/data/results/` (the volume IS the S3 bucket — no separate push needed).
+
+From Mac:
 ```bash
+cd "/Users/dyl5051/Documents/Claude/Projects/Serving Frameworks"
 aws s3 --profile runpod \
   --endpoint-url https://s3api-us-mo-1.runpod.io \
   cp s3://b8c835d0j0/data/results/ results/raw/ \
-  --recursive --exclude "*" --include "v1_hf_*.json"
+  --recursive --exclude "*" --include "v1_hf_a100_*.json" --include "sweep_v1_hf_a100*.json"
 ```
 
-Commit, re-run analyze.py. You're now at 30/50 cells with three frameworks (HF baseline + faster-whisper + vLLM) on both GPUs.
+Commit anything new (probably just `NEXT_SESSION.md` and any session notes), push to GitHub, stop the A100 pod.
 
-## Open scope decision after HF lands
+## Step 5: analyze.py over the now-30-cell dataset
 
-v1 was specced as 5 frameworks. We have data for 3 (HF, FW, vLLM). Remaining: Ray Serve and Triton. My current lean (subject to revisit): **Ray Serve in v1, Triton deferred to v1.1 with TensorRT-LLM** because vanilla Triton without TRT-LLM mostly duplicates the HF baseline's story. Make this call after seeing the 3-framework analyze.py output.
+```bash
+python scripts/analyze.py \
+    --raw-dir results/raw \
+    --output-dir results/published/v1_partial
+```
 
-## Headline findings (carry into v1 writeup)
+That gets you the three-framework decision matrix (HF + FW + vLLM × {L4, A100} × 5 concurrencies = 30 cells). v1.1+ remaining: Ray Serve and/or Triton. Ray Serve is the meaningful next adapter; Triton vanilla mostly duplicates the HF baseline so defer that to v1.2 with TensorRT-LLM (already speccd).
 
-- faster-whisper does NOT scale with concurrency on either GPU. CTranslate2 doesn't tensor-batch internally.
-- L4 is GPU-saturated at concurrency=1 with faster-whisper.
-- L4 wins cost-per-audio-hour, A100 wins per-request latency. Batch → L4, real-time → A100.
-- vLLM is 16-26× faster than faster-whisper on identical hardware/model/eval.
-- **vLLM hallucinates badly: WER 50-116% on 30-second clips vs faster-whisper's 3-4%.** This reshapes the writeup's spine: throughput is not the only thing that matters, the fastest framework here is unusable in production.
+## Headline findings to weave into the v1 writeup once A100 lands
+
+- **HF baseline doesn't scale with concurrency** because PyTorch's generate isn't thread-safe; we expose the realistic single-model bottleneck via a lock. The serialization itself IS the value-prop story: throughput is identical at c=1 and c=128, p95 latency degrades linearly.
+- **faster-whisper does NOT scale with concurrency either**, but for a different reason — CT2 doesn't tensor-batch internally. Same headline RTF across concurrencies.
+- **vLLM is 16-26× faster than faster-whisper** on identical hardware/model/eval, but **WER 50-116% on 30s clips** (vs faster-whisper's 3-4%, HF baseline's 1.4%). The fastest framework here is unusable in production. This reshapes the writeup spine: throughput is not the only thing that matters.
+- **L4 wins cost-per-audio-hour for batch workloads. A100 wins per-request latency.** Decision matrix: batch → L4, real-time → A100.
 
 ## Operational reminders
 
 - `tmux` for any sweep that takes more than a few minutes.
 - `caffeinate -dimsu -t 7200 &` on Mac during long Pod sessions.
-- HF cache env vars set BEFORE pip install or model download.
-- Container disk minimum 30 GB if vLLM is involved (not relevant for HF, but in case).
+- `bash /workspace/init_pod.sh` is the single bootstrap on every new pod that mounts `b8c835d0j0`. Don't repeat the per-step manual setup from session 6.
 - Always check terminal prompt before pasting. `root@<id>#` = Pod, `dyl5051@Dongkeuns-MacBook-Pro` = Mac.
-- **STOP, don't TERMINATE** Pods. Terminate destroys the pod-volume.
-- Pull results via S3 BEFORE stopping the Pod — there's no second chance if the volume gets reaped.
+- **STOP, don't TERMINATE** Pods. Both preserve `b8c835d0j0`, but stop is reversible.
+- The "no volume configured" warning on stop is misleading — RunPod is referring to the **container disk**, not the network volume. `/workspace` (mfs#us-mo-1.runpod.net) survives both stop AND terminate.
+- Smoke-test sanity check before any full sweep. Noisy hosts are real and will silently poison your data.
+- Pull results via S3 BEFORE stopping the Pod (paranoia, not strictly necessary — the volume's S3 endpoint stays accessible after pod stop).
