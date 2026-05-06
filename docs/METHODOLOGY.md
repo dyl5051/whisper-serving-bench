@@ -28,6 +28,13 @@ Each "cell" is one (framework, GPU, concurrency) combination. For each cell we r
 
 **Text normalization.** All hypothesis and reference transcripts are passed through OpenAI's `EnglishTextNormalizer` (from the `whisper` package) before WER computation. This is critical because frameworks differ in their default decoding (some emit punctuation, some don't; some normalize numbers, some don't), and unnormalized WER comparisons are not meaningful. WER is computed via `jiwer`.
 
+**Long-form audio handling.** Whisper's encoder accepts a fixed 30-second window. The eval clips in `librispeech_streaming_30s` average 35.5s and range up to 46s, so adapters must chunk long audio rather than silently truncating to 30s. Each adapter handles this differently and the choice is recorded in the cell's `metadata`:
+  - **faster-whisper** chunks internally via CT2's `transcribe()`; we accept the default 30s window with no overlap.
+  - **HF Transformers** uses transformers' built-in long-form generation: `processor(..., truncation=False, return_attention_mask=True)` + `generate(..., return_timestamps=True)`. Equivalent to what `pipeline()` does internally but exposed via the direct `generate` API so we don't inherit `pipeline()`'s ffmpeg/torchcodec dependency.
+  - **vLLM** routes audio through its own preprocessing pipeline; chunking behavior here is the framework's, not ours.
+
+If any adapter silently truncates long audio, the resulting WER inflation is dominated by deletions and is a measurement bug, not a framework finding.
+
 **GPU telemetry.** A background thread samples `nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader,nounits` at 1Hz throughout the timed run, including during warm-up (so we can see model load behavior) but the warm-up samples are tagged separately in the JSON.
 
 **Failure handling.** If a request errors, the failure is recorded with full traceback and the cell continues. If >10% of requests fail, the cell is marked `degraded` and its aggregate metrics are flagged. If the framework refuses to start at all (e.g. vLLM doesn't support a particular concurrency level), the cell is marked `unsupported` and an entry is still emitted to the results JSON — these are findings.

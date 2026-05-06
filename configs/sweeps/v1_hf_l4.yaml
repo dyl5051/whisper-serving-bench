@@ -1,0 +1,20 @@
+# Sweep: HF Transformers (no-batching baseline) × L4 × all 5 concurrencies.
+# Same audio, model, eval as the faster-whisper L4 row, so the comparison
+# directly quantifies what an optimization-free baseline costs you on this GPU.
+
+name: v1_hf_l4
+description: |
+  HF Transformers / whisper-large-v3 / LibriSpeech streaming-30s eval, swept
+  across concurrency {1, 8, 32, 64, 128} on L4. 5 cells.
+
+  This is the unoptimized baseline. No batching, no compiled kernels, no
+  serving-layer optimizations — direct AutoModelForSpeechSeq2Seq.generate()
+  per request. Expect substantially worse throughput than faster-whisper at
+  every concurrency, and possibly OOM at c=128 on the 24GB card.
+
+cells:
+  - configs/cells/v1_hf_l4_c1.yaml
+  - configs/cells/v1_hf_l4_c8.yaml
+  - configs/cells/v1_hf_l4_c32.yaml
+  - configs/cells/v1_hf_l4_c64.yaml
+  - configs/cells/v1_hf_l4_c128.yaml

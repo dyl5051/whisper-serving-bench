@@ -5,6 +5,13 @@ This adapter intentionally has no serving optimizations:
     - No batching (each transcribe call is one forward pass on one input)
     - No KV cache management beyond what model.generate() does internally
     - No request queuing
+    - Concurrent requests are serialized through a lock around model.generate
+      because PyTorch model.generate() is not thread-safe (concurrent calls
+      on the same model corrupt CUDA state and crash with a device-side
+      assert). Serializing is the honest naive-baseline behavior: "you can
+      submit N concurrent requests but they queue through one model on one
+      GPU." That serialization is exactly the gap batched/replicated
+      frameworks (vLLM continuous batching, Ray Serve replicas) fill.
 
 It exists so we can measure how much the other frameworks' optimizations
 actually buy you. If vLLM's continuous batching is +5x throughput vs HF
@@ -32,6 +39,7 @@ Adapter config knobs (passed via CellConfig.adapter_config):
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any
 
 from adapters.base import FrameworkAdapter
@@ -55,6 +63,7 @@ class HfTransformersAdapter(FrameworkAdapter):
                 f"got {self._dtype_name!r}"
             )
         self._language: str | None = config.adapter_config.get("language")
+        self._model_lock = threading.Lock()
 
     async def setup(self) -> None:
         # Deferred imports so that importing this module doesn't trigger
@@ -104,8 +113,18 @@ class HfTransformersAdapter(FrameworkAdapter):
         import torch
 
         # max_new_tokens cap prevents runaway generation on noisy audio;
-        # 440 leaves headroom under Whisper's 448 max decoder length.
-        generate_kwargs: dict[str, Any] = {"max_new_tokens": 440}
+        # 440 leaves headroom under Whisper's 448 max decoder length. In
+        # long-form mode this applies per 30s chunk, not per clip.
+        generate_kwargs: dict[str, Any] = {
+            "max_new_tokens": 440,
+            # return_timestamps=True activates transformers' long-form generation
+            # path: the model emits timestamp tokens that delimit 30s chunks and
+            # internally re-runs the decoder for each chunk, so clips longer than
+            # Whisper's 30s encoder window get fully transcribed instead of
+            # silently truncated. Required for any eval set with variable-length
+            # audio (our 30s+ streaming clips average 35.5s, max 46s).
+            "return_timestamps": True,
+        }
         if self._language:
             generate_kwargs["language"] = self._language
             generate_kwargs["task"] = "transcribe"
@@ -122,13 +141,28 @@ class HfTransformersAdapter(FrameworkAdapter):
 
             # The processor handles resampling to 16kHz internally if sr != 16000,
             # then computes the log-mel spectrogram the encoder needs.
+            # truncation=False + return_attention_mask=True is the long-form
+            # contract: features cover the full audio (not capped at 30s) and the
+            # mask tells the model the real length so it knows where to chunk.
             inputs = self._processor(
-                arr, sampling_rate=sr, return_tensors="pt"
+                arr,
+                sampling_rate=sr,
+                return_tensors="pt",
+                truncation=False,
+                padding="longest",
+                return_attention_mask=True,
             )
             input_features = inputs.input_features.to(self._device, dtype=self._torch_dtype)
+            attention_mask = inputs.attention_mask.to(self._device)
 
-            with torch.inference_mode():
-                predicted_ids = self._model.generate(input_features, **generate_kwargs)
+            # Serialize concurrent generate() calls — PyTorch's model.generate
+            # is not thread-safe across workers sharing one model instance.
+            with self._model_lock, torch.inference_mode():
+                predicted_ids = self._model.generate(
+                    input_features,
+                    attention_mask=attention_mask,
+                    **generate_kwargs,
+                )
             text = self._processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
             return text
 

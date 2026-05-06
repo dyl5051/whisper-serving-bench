@@ -1,0 +1,21 @@
+# v1: HF Transformers baseline, L4, concurrency=128. May OOM on the 24GB card
+# at this concurrency without batching consolidation; if so the cell is
+# recorded as 'unsupported' and we report it as a finding (HF baseline holds
+# more memory per request than CT2-based faster-whisper does).
+cell_id: v1_hf_l4_concurrent_128
+framework: hf
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 128
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 720
+
+adapter_config:
+  device: cuda
+  dtype: float16
+  language: en

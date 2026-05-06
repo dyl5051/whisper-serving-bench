@@ -1,0 +1,20 @@
+# Sweep: HF Transformers (no-batching baseline) × A100 SXM 80GB × all 5
+# concurrencies. Companion to v1_hf_l4 — establishes how much headroom the
+# bigger GPU buys you when running Whisper without any framework-level
+# optimization.
+
+name: v1_hf_a100
+description: |
+  HF Transformers / whisper-large-v3 / LibriSpeech streaming-30s eval, swept
+  across concurrency {1, 8, 32, 64, 128} on A100 SXM 80GB. 5 cells.
+
+  Unoptimized baseline. The A100's extra memory means c=128 should not OOM
+  here, so this sweep also tells us where HF saturates on a large GPU vs
+  faster-whisper's CT2-based saturation profile.
+
+cells:
+  - configs/cells/v1_hf_a100_c1.yaml
+  - configs/cells/v1_hf_a100_c8.yaml
+  - configs/cells/v1_hf_a100_c32.yaml
+  - configs/cells/v1_hf_a100_c64.yaml
+  - configs/cells/v1_hf_a100_c128.yaml
