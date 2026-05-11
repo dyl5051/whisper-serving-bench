@@ -1,18 +1,5 @@
-# v1 Writeup Outline
 
-This is the structural skeleton of the v1 blog post. It exists so that when the
-50 cells are populated and we sit down to write, the structure is already
-decided and we just fill in numbers. Each section has placeholder TODOs that
-indicate what to drop in once analyze.py has produced the tables.
-
-The writeup's audience is **infrastructure engineers and CTOs at Series B+
-startups picking their ASR stack**. They'll skim. The TL;DR has to land in 30
-seconds. The decision matrix has to be screenshotable. The methodology has to
-be linkable but not central.
-
----
-
-## Title (pick one before publishing)
+## Title
 
 - "Whisper serving frameworks: a benchmark you can reproduce"
 - "Choosing a Whisper serving framework: a 50-cell decision matrix"
