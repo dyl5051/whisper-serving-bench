@@ -52,6 +52,9 @@ faster-whisper = [
 vllm = [
     # vLLM Whisper support landed in 0.6.x. Pin to a known-good version.
     "vllm>=0.6.3",
+    # silero-vad enables the vad_filter_input adapter knob (v1.0.1 experiment:
+    # does pre-filtering silence rescue vLLM's Whisper WER?).
+    "silero-vad>=5.0",
 ]
 ray-serve = [
     "ray[serve]>=2.35.0",

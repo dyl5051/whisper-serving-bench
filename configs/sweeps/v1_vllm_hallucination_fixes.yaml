@@ -1,0 +1,31 @@
+# v1.0.1 experiment: does anything rescue vLLM × Whisper's WER?
+#
+# v1 measured 100-186% WER across vLLM cells (root cause: vLLM's Whisper
+# integration omits openai-whisper's ASR safeguards — no compression-ratio
+# threshold, no no-speech threshold, no temperature fallback). This sweep
+# tests three mitigations at A100 c=1 against a control baseline:
+#
+#   1. baseline — same config as v1_vllm_a100_c1, re-runs to establish
+#      this pod's baseline WER (sanity-check that we're seeing the same
+#      hallucination pattern, not just host variance).
+#   2. prompt — OpenAI-compatible `prompt` field to anchor the model.
+#   3. crfilter — post-hoc gzip compression-ratio reject (>2.4).
+#   4. vad — silero-vad strips silence from audio before transcription.
+#
+# All four are A100 c=1 only — ~5-15 min total compute. Decision rule:
+# if any variant produces WER < 10%, we have a working mitigation and
+# the next step is re-running the full v1_vllm_a100 sweep with that
+# config. If none drop below ~50%, the v1 finding holds and the writeup
+# stands.
+
+name: v1_vllm_hallucination_fixes
+description: |
+  Test three mitigations for vLLM × Whisper hallucination at A100 c=1.
+  Run as a separate experiment from the main v1 matrix; outputs land
+  in results/raw/ with distinct cell_ids so they don't collide.
+
+cells:
+  - configs/cells/v1_vllm_a100_c1_baseline.yaml
+  - configs/cells/v1_vllm_a100_c1_prompt.yaml
+  - configs/cells/v1_vllm_a100_c1_crfilter.yaml
+  - configs/cells/v1_vllm_a100_c1_vad.yaml

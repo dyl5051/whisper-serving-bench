@@ -1,0 +1,24 @@
+# v1.0.1 hallucination-fixes experiment: control. Same config as
+# v1_vllm_a100_c1 — establishes the "no mitigations" baseline WER on this
+# pod/host before we compare variants. Expected WER: 100-110% (matches
+# the original v1 measurement).
+cell_id: v1_vllm_a100_c1_baseline
+framework: vllm
+model: openai/whisper-large-v3
+gpu: A100-SXM4-80GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 1
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 120
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 64
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240

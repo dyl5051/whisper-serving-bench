@@ -30,6 +30,8 @@ Adapter config knobs:
 from __future__ import annotations
 
 import asyncio
+import gzip
+import io
 import os
 import signal
 import subprocess
@@ -62,6 +64,24 @@ class VllmAdapter(FrameworkAdapter):
         self._server_startup_timeout_seconds: float = float(
             config.adapter_config.get("server_startup_timeout_seconds", 180.0)
         )
+        # Hallucination-mitigation knobs added in v1.0.1 experiment.
+        # See writeups/v1.md "Should you self-host" and METHODOLOGY.md.
+        # prompt: OpenAI-compatible prompt prefix to anchor the model.
+        # compression_ratio_threshold: post-hoc reject outputs with gzip ratio
+        #   above this (faster-whisper default is 2.4). Replaces high-CR text
+        #   with empty string — emulates faster-whisper's compression-ratio
+        #   safeguard that vLLM's Whisper wrapper omits.
+        # vad_filter_input: if True, preprocess audio with silero-vad to strip
+        #   non-speech regions before sending. Attacks the root cause directly.
+        self._prompt: str | None = config.adapter_config.get("prompt")
+        self._compression_ratio_threshold: float | None = (
+            float(config.adapter_config["compression_ratio_threshold"])
+            if config.adapter_config.get("compression_ratio_threshold") is not None
+            else None
+        )
+        self._vad_filter_input: bool = bool(config.adapter_config.get("vad_filter_input", False))
+        self._vad_model: Any = None  # set lazily in setup() if VAD is enabled
+
         # vLLM serves the model under the same name passed to it. We use the
         # canonical HF id so the served model name matches what clients query.
         self._served_model_name: str = config.model
@@ -79,6 +99,12 @@ class VllmAdapter(FrameworkAdapter):
             timeout=httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0),
         )
         await self._wait_for_ready()
+        if self._vad_filter_input:
+            # Lazy-load silero-vad so non-VAD cells don't pay the import cost.
+            from silero_vad import load_silero_vad
+            loop = asyncio.get_running_loop()
+            self._vad_model = await loop.run_in_executor(None, load_silero_vad)
+            print("[VllmAdapter] silero-vad model loaded")
         print(f"[VllmAdapter] vLLM server ready at {self._base_url}")
 
     async def _spawn_vllm_server(self) -> None:
@@ -145,13 +171,18 @@ class VllmAdapter(FrameworkAdapter):
         if self._client is None:
             raise RuntimeError("Adapter.setup() must be called before transcribe()")
 
-        # Send the WAV file via the OpenAI-compatible /audio/transcriptions endpoint.
-        # multipart/form-data is what real OpenAI Whisper API clients send, so this
-        # measurement is representative of production usage.
-        with open(clip.audio_path, "rb") as f:
-            audio_bytes = f.read()
+        # Load audio bytes. If VAD pre-filter is enabled, decode → run VAD →
+        # concatenate speech regions → re-encode WAV before upload. This
+        # attacks vLLM's hallucination root cause (model freelances on silence)
+        # by removing the silence the model is invited to freelance on.
+        if self._vad_filter_input:
+            audio_bytes, audio_filename = await self._vad_filter_clip(clip)
+        else:
+            with open(clip.audio_path, "rb") as f:
+                audio_bytes = f.read()
+            audio_filename = clip.audio_path.name
 
-        files = {"file": (clip.audio_path.name, audio_bytes, "audio/wav")}
+        files = {"file": (audio_filename, audio_bytes, "audio/wav")}
         data: dict[str, str] = {
             "model": self._served_model_name,
             # temperature=0 forces greedy decoding. Whisper's default temperature
@@ -163,12 +194,72 @@ class VllmAdapter(FrameworkAdapter):
         }
         if self._language:
             data["language"] = self._language
+        if self._prompt is not None:
+            data["prompt"] = self._prompt
 
         response = await self._client.post("/audio/transcriptions", files=files, data=data)
         response.raise_for_status()
         payload = response.json()
         # OpenAI-compatible response shape: {"text": "..."}
-        return payload.get("text", "")
+        text: str = payload.get("text", "")
+
+        # Post-hoc compression-ratio filter emulates faster-whisper's safeguard.
+        # Repetitive hallucinations like "thanks for watching ×20" gzip-compress
+        # to a tiny fraction of their size, producing a high ratio. Real speech
+        # has ratio ~1.5-2.0; loops push it above 2.4 quickly.
+        if self._compression_ratio_threshold is not None and text:
+            cr = _gzip_compression_ratio(text)
+            if cr > self._compression_ratio_threshold:
+                # Discarded as a hallucination loop. Emit empty string; the
+                # harness reports this as a successful request with empty
+                # hypothesis, which propagates correctly through WER computation
+                # (empty hyp vs non-empty ref → all deletions).
+                return ""
+
+        return text
+
+    async def _vad_filter_clip(self, clip: AudioClip) -> tuple[bytes, str]:
+        """Run silero-vad on the clip's audio, return (speech-only-wav-bytes, filename)."""
+        if self._vad_model is None:
+            raise RuntimeError("VAD model not loaded — set vad_filter_input=True in adapter_config")
+
+        # Heavy import deferred to actual use.
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from silero_vad import get_speech_timestamps
+
+        loop = asyncio.get_running_loop()
+
+        def _run() -> tuple[bytes, str]:
+            arr, sr = sf.read(str(clip.audio_path), dtype="float32")
+            if arr.ndim > 1:
+                arr = arr.mean(axis=1).astype(np.float32)
+            # silero-vad expects 16 kHz; resample if needed.
+            if sr != 16000:
+                import librosa
+                arr = librosa.resample(arr, orig_sr=sr, target_sr=16000)
+                sr = 16000
+
+            wav_tensor = torch.from_numpy(arr)
+            timestamps = get_speech_timestamps(
+                wav_tensor, self._vad_model, sampling_rate=sr
+            )
+            if not timestamps:
+                # Fully silent clip — return a tiny silence WAV. The model
+                # gets nothing to transcribe and should emit nothing.
+                speech_arr = np.zeros(int(0.1 * sr), dtype=np.float32)
+            else:
+                # Concatenate speech regions back-to-back.
+                speech_arr = np.concatenate(
+                    [arr[seg["start"]:seg["end"]] for seg in timestamps]
+                ).astype(np.float32)
+
+            buf = io.BytesIO()
+            sf.write(buf, speech_arr, sr, format="WAV", subtype="PCM_16")
+            return buf.getvalue(), clip.audio_path.stem + ".vad.wav"
+
+        return await loop.run_in_executor(None, _run)
 
     async def aclose(self) -> None:
         if self._client is not None:
@@ -205,4 +296,21 @@ class VllmAdapter(FrameworkAdapter):
             "spawn_server": self._spawn_server,
             "served_model_name": self._served_model_name,
             "model_canonical_short": fw_short,  # informational
+            "prompt": self._prompt,
+            "compression_ratio_threshold": self._compression_ratio_threshold,
+            "vad_filter_input": self._vad_filter_input,
         }
+
+
+def _gzip_compression_ratio(text: str) -> float:
+    """Faster-whisper's compression-ratio safeguard, ported.
+
+    Real speech transcripts compress to roughly 1.5-2.0 ratio. Repetition loops
+    ("thanks for watching, thanks for watching, ...") compress aggressively and
+    blow past 2.4 quickly. Above the threshold = hallucination loop = discard.
+    """
+    raw = text.encode("utf-8")
+    if not raw:
+        return 0.0
+    compressed = gzip.compress(raw, compresslevel=6)
+    return len(raw) / len(compressed)

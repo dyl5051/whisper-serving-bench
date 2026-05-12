@@ -1,0 +1,25 @@
+# v1.0.1 hallucination-fixes experiment: prompt-injection variant.
+# Add an OpenAI-compatible `prompt` field to anchor the model on the
+# expected output domain. Cheapest possible mitigation; if it works,
+# the fix is one line of config.
+cell_id: v1_vllm_a100_c1_prompt
+framework: vllm
+model: openai/whisper-large-v3
+gpu: A100-SXM4-80GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 1
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 120
+
+adapter_config:
+  port: 8765
+  dtype: float16
+  max_num_seqs: 64
+  gpu_memory_utilization: 0.85
+  language: en
+  server_startup_timeout_seconds: 240
+  prompt: "The following is a clear English narration of a passage from an audiobook."
