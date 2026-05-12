@@ -24,7 +24,16 @@ Its Word Error Rate at that cell: **113%**.
 
 Not a typo. WER over 100% means vLLM hallucinates *more words* than the reference transcript contained. On clean LibriSpeech audio that Whisper-large-v3 transcribes at ~1.4% WER everywhere else, vLLM produces 50-186% WER across the entire sweep.
 
-Root cause: vLLM's Whisper integration ships without the standard ASR safeguards (compression-ratio threshold, no-speech threshold, temperature fallback) that openai-whisper and faster-whisper apply by default. The continuous-batching engine works as advertised; the Whisper wrapper around it is missing the silence-detection guards that prevent the model from freelancing on every quiet moment. **Until upstream fixes this, vLLM × Whisper is a benchmark trap, not a deployment.**
+Root cause: vLLM's Whisper integration ships without the standard ASR safeguards (compression-ratio threshold, no-speech threshold, temperature fallback) that openai-whisper and faster-whisper apply by default.
+
+**I tested three surface-level fixes at A100 c=1 before publishing — none worked.** Prompt injection (`"The following is clear English narration..."`) made it *worse* (WER 153%). Post-hoc gzip-compression-ratio filtering, which catches faster-whisper-style loop hallucinations, barely moved the needle (97%). Silero-VAD pre-filtering to strip silence before transcribing didn't help either (102%).
+
+Spot-checking actual transcripts reveals what's happening: **vLLM × Whisper isn't producing repetition loops, it's emitting coherent English narrative that has nothing to do with the audio.**
+
+> *Reference*: "Concord returned to its place amidst the tents..."
+> *vLLM hypothesis*: "Concerns and fears. By the time I was there I was already in the middle of the night..."
+
+The model is largely *ignoring the audio* and generating prior-distribution text. The fix isn't a config tweak. It's an integration rewrite. **Until upstream lands the full openai-whisper safeguard loop or fixes audio-embedding routing, vLLM × Whisper is a benchmark trap, not a deployment.**
 
 If you're routing patient audio through vLLM today thinking you're getting Whisper-quality transcripts at 1/30th the cost: you're not.
 
