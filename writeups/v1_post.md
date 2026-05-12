@@ -64,6 +64,29 @@ A note before the list: these recommendations are organized by **the workload yo
 - **High offered load (32+ concurrent), latency budget under 60s** → **no correct option in v1.** HF queues hit minutes; faster-whisper OOMs; vLLM hallucinates. Either bring multi-replica serving (Ray Serve, planned for v1.2) or wait for v1.1's Triton + TensorRT-LLM.
 - **vLLM × Whisper at any load** → don't, until upstream fixes the hallucination issue.
 
+## A meta-question: should you self-host at all?
+
+The matrix above is "which self-hosted framework wins." It dodges the prior question. For comparison, mid-2026 managed-STT list prices (verify before quoting; they shift quarterly):
+
+| service | ~$/audio-hour |
+|---|---|
+| AWS Transcribe | ~$1.44 |
+| Google Cloud STT | ~$0.96 |
+| Azure Speech | ~$1.00 |
+| OpenAI Whisper API | ~$0.36 |
+| Deepgram (Nova-3) | ~$0.43 |
+| AssemblyAI | ~$0.37 |
+
+Our cheapest self-hosted cell — HF × L4 at **$0.027/audio-hour** — is ~13-50× cheaper than the cheapest managed option *on paper*. In practice:
+
+- Self-hosted assumes 100% GPU utilization. Real bursty traffic hits 30-50% utilization, which doubles or triples your effective $/audio-hour.
+- Self-hosted excludes operational cost — engineering time for CUDA upgrades, version bumps, on-call, monitoring. At small scale, that's the bigger line item than compute.
+- Managed services bundle SLAs, multi-region failover, and a support phone number.
+
+**The decision rule:** self-host if you have (a) high sustained volume that amortizes the ops cost across many audio-hours, OR (b) compliance / data-residency requirements that managed services can't meet. Otherwise managed almost always wins on total cost of ownership.
+
+For our healthtech use case, (b) decides it — clinician audio can't leave our VPC. Your situation may differ. The benchmark answers "if you've already decided to self-host" — it doesn't answer "should you self-host."
+
 ## Three things I didn't expect
 
 **The first HF run produced 32% WER.** Headline number was bad enough that I almost shipped the cell as "HF baseline has poor quality." Then I read the per-request hypotheses against references and noticed the hypothesis was always ~50 words even when the reference was ~150. Diagnosis: the eval clips averaged 35.5s but the HF adapter was silently truncating audio to Whisper's 30s encoder window. Fixed by switching to long-form generation (`return_timestamps=True` + `truncation=False` + `return_attention_mask=True`). WER dropped to 1.44%. **Don't trust headline numbers; read the actual transcripts.**
