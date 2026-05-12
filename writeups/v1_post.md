@@ -2,6 +2,8 @@
 
 I spent the last two weeks running 30 benchmark cells comparing **HF Transformers**, **faster-whisper**, and **vLLM** serving OpenAI's Whisper-large-v3 on NVIDIA L4 and A100 GPUs, swept across concurrency levels of 1, 8, 32, 64, and 128. Here's what I found.
 
+A quick note on how I'm using "concurrency": it refers to **your workload's offered load** — how many transcribe requests are hitting the service at the same time — not a config knob you turn. You can't pick c=8; your users do. The point of sweeping across concurrencies in the benchmark is so you can match your own workload to the right row in the matrix.
+
 ## Why I did this
 
 I run ML / ML infra at a healthtech startup. We use Whisper as the speech-to-text layer behind a system of record — clinicians record sessions, we transcribe, the transcripts feed structured records that influence downstream decisions. That puts real pressure on three axes simultaneously:
@@ -54,10 +56,13 @@ faster-whisper × L4 caps at c=8 (24 GB memory ceiling). vLLM × L4 dies at c=12
 
 ## What I'd actually deploy
 
-- **Most production transcription** → **faster-whisper on L4**. Best balance of cost, quality, ops simplicity. WER ~4%, cost ~$0.10/audio-hour. Drop-in replacement for openai-whisper.
-- **Batch / cost-sensitive** (overnight backlogs) → **HF baseline on L4 c=8**. Cheapest correct cell in the matrix. State-of-the-art quality.
-- **Real-time / latency-sensitive** (live captions, voice agents) → **faster-whisper on A100 c=1-8**. Pay 2-4× more for ~2× latency improvement at scale.
-- **vLLM × Whisper** → don't, until upstream fixes the hallucination issue.
+A note before the list: these recommendations are organized by **the workload you're serving**, not by knobs you choose. The framework + GPU is the decision; the offered concurrent load is the input that picks which row of the matrix applies.
+
+- **Low offered load (a few concurrent requests) + cost-sensitive** (overnight backlogs, internal tooling) → **HF Transformers on L4** with long-form chunking enabled. **$0.027/audio-hour, 1.44% WER, p95 ~2-14s** depending on how concurrent your peak gets. Cheapest correct cell in our matrix. *Caveat: HF needs careful config (`return_timestamps=True`, `truncation=False`, `return_attention_mask=True`, and a `threading.Lock` around `generate()`) — without those you silently break.*
+- **Low offered load + you want battle-tested defaults** → **faster-whisper on L4**. Higher WER (~4%) and ~3× the cost of HF, but ships with the ASR-specific safeguards (no-speech / compression-ratio / temperature fallback) that make it more robust on messier real-world audio than this clean-LibriSpeech eval shows. The conservative pick.
+- **Latency-sensitive at low load** (live captions, voice agents, ≤8 concurrent streams) → **HF or faster-whisper on A100, single-stream**. A100 wins per-request latency when the host isn't contended. Pay 2-4× more for ~2× latency improvement.
+- **High offered load (32+ concurrent), latency budget under 60s** → **no correct option in v1.** HF queues hit minutes; faster-whisper OOMs; vLLM hallucinates. Either bring multi-replica serving (Ray Serve, planned for v1.2) or wait for v1.1's Triton + TensorRT-LLM.
+- **vLLM × Whisper at any load** → don't, until upstream fixes the hallucination issue.
 
 ## Three things I didn't expect
 
