@@ -103,49 +103,41 @@ def render_table(
 # Table 01: decision table by workload shape (4 rows)
 # ----------------------------------------------------------------------------
 def render_01_decision_table() -> None:
-    # 7 columns — one per decision-relevant metric we graded.
-    # Excluded: p50/p99 latency (p95 is the operational summary), GPU util
-    # (diagnostic), peak GPU memory (captured via OOM walls in tables 02–09).
-    gotcha_row = 2  # "no correct option in v1"
+    # 6 columns × 5 rows — one row per measured concurrency. Avoids the
+    # arbitrary bucket boundaries (≤8 / 32–128) of an earlier version,
+    # which skipped the c=16/24 region and implied tight latency was
+    # achievable at c=8 (it isn't; HF × L4 c=8 already has p95 13.75s).
+    # The 5-row table matches the actual benchmark grid (1, 8, 32, 64, 128).
     render_table(
         filename="01_decision_table_by_workload_shape.png",
         headers=[
-            "Peak load",
-            "p95 budget",
+            "Peak concurrent load",
             "Deployment",
             "RTF",
-            "p95 actual",
+            "p95",
             "WER",
             "Cost / audio-hr",
         ],
         rows=[
-            ["≤8 concurrent", "Tight (≤2s)", "HF × L4", "0.044", "1.96s", "1.44%", "$0.027"],
-            ["≤8 concurrent", "Loose (10s+)", "HF × L4", "0.044", "~14s", "1.44%", "$0.027"],
-            ["32–128 concurrent", "Tight (≤2s)", "No correct option in v1", "—", "—", "—", "—"],
-            ["32–128 concurrent", "Loose", "HF × L4", "0.044–0.046", "52–209s", "1.44%", "$0.027"],
+            ["c=1 (single-stream)", "HF × L4", "0.0446", "1.96s", "1.44%", "$0.0267"],
+            ["c=8", "HF × L4", "0.0442", "13.75s", "1.44%", "$0.0265"],
+            ["c=32", "HF × L4", "0.0442", "52.09s", "1.44%", "$0.0265"],
+            ["c=64", "HF × L4", "0.0442", "102.11s", "1.44%", "$0.0265"],
+            ["c=128", "HF × L4", "0.0456", "209.12s", "1.44%", "$0.0273"],
         ],
-        fig_size=(14, 3.8),
-        col_widths=[0.15, 0.13, 0.20, 0.11, 0.13, 0.10, 0.14],
+        fig_size=(13, 4.2),
+        col_widths=[0.22, 0.16, 0.12, 0.14, 0.12, 0.16],
         cell_highlights={
-            # green for winner deployments
-            (0, 2): WINNER_BG,
-            (1, 2): WINNER_BG,
-            (3, 2): WINNER_BG,
-            # amber for the empty-quadrant row across all 7 cells
-            (gotcha_row, 0): GOTCHA_BG,
-            (gotcha_row, 1): GOTCHA_BG,
-            (gotcha_row, 2): GOTCHA_BG,
-            (gotcha_row, 3): GOTCHA_BG,
-            (gotcha_row, 4): GOTCHA_BG,
-            (gotcha_row, 5): GOTCHA_BG,
-            (gotcha_row, 6): GOTCHA_BG,
+            # all deployment cells green (HF × L4 wins at every concurrency)
+            (0, 1): WINNER_BG,
+            (1, 1): WINNER_BG,
+            (2, 1): WINNER_BG,
+            (3, 1): WINNER_BG,
+            (4, 1): WINNER_BG,
         },
-        cell_bold={
-            (0, 2), (1, 2), (3, 2),
-            (gotcha_row, 2),  # "No correct option in v1"
-        },
-        text_cols={0, 1, 2},
-        row_scale=2.2,
+        cell_bold={(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)},
+        text_cols={0, 1},
+        row_scale=2.0,
     )
 
 

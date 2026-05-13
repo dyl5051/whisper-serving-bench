@@ -10,12 +10,13 @@ WER over 100% means the framework outputs *more hallucinated words than the refe
 
 In the matrix below, "concurrency" is your workload's **offered load** — how many in-flight requests at peak — not a knob you tune. Identify your expected peak, find the matching row, read the metrics.
 
-`[IMAGE: 01_decision_table_by_workload_shape.png — "Decision table by workload shape — 7 columns: peak load / p95 budget / deployment / RTF / p95 actual / WER / cost"]`
+`[IMAGE: 01_decision_table_by_workload_shape.png — "Decision table: HF × L4 at each measured concurrency (1, 8, 32, 64, 128). Columns: deployment / RTF / p95 / WER / cost / audio-hour"]`
 
-Two things worth pointing out:
+Three things worth pointing out:
 
-- **HF × L4 cost is constant across concurrency at $0.027.** The lock-serialized baseline has flat throughput, so your bill doesn't change with load; only tail latency does. The framework + GPU decision is settled before you look at the latency column.
-- **High concurrency + tight latency is the empty quadrant.** No framework in v1 serves correct Whisper transcripts at c=32+ under a 2-second p95 budget. HF queues (p95 85-327s), faster-whisper OOMs, vLLM hallucinates. That's not a failure of the benchmark — it's the actual state of open-source Whisper serving in mid-2026.
+- **The framework choice is settled before you look at the rows.** HF × L4 wins at every concurrency we measured. Cost, RTF, and WER are essentially constant down the table — the only thing that changes is p95 latency.
+- **p95 latency scales linearly with concurrency.** ~1.6s at c=1, then +1.6s for every additional in-flight request behind the lock. That's the structural cost of running a single-model PyTorch deployment under concurrent load (see Finding 2 for why).
+- **Tight latency + high concurrency is the empty zone v1 can't fill.** If you need p95 <2s, stay at c=1. If you accept tens of seconds of p95, c≤32 works. v1 has no deployment that delivers both single-digit p95 AND high concurrency simultaneously with correct transcripts — HF queues, faster-whisper OOMs, vLLM hallucinates. That gap is what v1.1 (TensorRT-LLM) is meant to close.
 
 ## Why this benchmark exists
 
