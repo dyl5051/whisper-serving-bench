@@ -1,15 +1,21 @@
 # Choosing a Whisper serving framework: a 30-cell decision matrix
 
-**The cheapest correct Whisper-large-v3 deployment in this benchmark: Hugging Face Transformers on a single NVIDIA L4 — $0.027/audio-hour, 1.44% WER, at any concurrency.** Latency degrades from p95 1.96s to 209s as offered load grows from 1 to 128 in-flight requests, but cost and quality stay flat. vLLM is faster on raw throughput; on Whisper specifically, its transcripts are unusable today (50-186% WER — more on that below).
+Whisper-large-v3 has quietly become the default open-source speech-to-text model — if you've used a meeting tool, voice agent, or transcription product in the last two years, there's a good chance Whisper is somewhere in the stack. OpenAI doesn't host large-v3 directly (their hosted Whisper API runs an older variant), so anyone who wants the latest model self-hosts. That means picking a serving framework.
 
-In the matrix below, "concurrency" is your workload's **offered load** — how many in-flight requests at peak — not a knob you tune. Identify your expected peak, find the matching row, read the latency and cost.
+I needed to pick one. I run ML infrastructure at a healthtech startup; we transcribe clinician sessions into a structured system of record. Three things matter simultaneously: WER (a transcription error is a clinical-data error), cost (hours of audio per provider per day adds up fast), and operational simplicity. Every Whisper benchmark I could find took at most one of those seriously. So I built one that takes all three.
 
-`[IMAGE: 01_decision_table_by_workload_shape.png — "Decision table by workload shape (4 rows)"]`
+**What I found: the fastest framework hits 285× real-time at half a cent per audio-hour. Its Word Error Rate at that cell: 113%.**
+
+WER over 100% means the framework outputs *more hallucinated words than the reference contained.* The fastest, cheapest cell in the entire matrix is unshippable. The cheapest *correct* deployment turned out to be Hugging Face Transformers on a single NVIDIA L4 — a $0.60/hr GPU you probably weren't planning to use — at **$0.027/audio-hour and 1.44% WER**, regardless of concurrency. Latency degrades from p95 1.96s to 209s as offered load grows from 1 to 128 in-flight requests, but cost and quality stay flat.
+
+In the matrix below, "concurrency" is your workload's **offered load** — how many in-flight requests at peak — not a knob you tune. Identify your expected peak, find the matching row, read the metrics.
+
+`[IMAGE: 01_decision_table_by_workload_shape.png — "Decision table by workload shape — 7 columns: peak load / p95 budget / deployment / RTF / p95 actual / WER / cost"]`
 
 Two things worth pointing out:
 
 - **HF × L4 cost is constant across concurrency at $0.027.** The lock-serialized baseline has flat throughput, so your bill doesn't change with load; only tail latency does. The framework + GPU decision is settled before you look at the latency column.
-- **High concurrency + tight latency is the empty quadrant.** No framework in v1 serves correct Whisper transcripts at c=32+ under a 2-second p95 budget. That's not a failure of the benchmark — it's the actual state of open-source Whisper serving in mid-2026.
+- **High concurrency + tight latency is the empty quadrant.** No framework in v1 serves correct Whisper transcripts at c=32+ under a 2-second p95 budget. HF queues (p95 85-327s), faster-whisper OOMs, vLLM hallucinates. That's not a failure of the benchmark — it's the actual state of open-source Whisper serving in mid-2026.
 
 ## Why this benchmark exists
 

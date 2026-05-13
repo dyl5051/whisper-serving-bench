@@ -103,43 +103,46 @@ def render_table(
 # Table 01: decision table by workload shape (4 rows)
 # ----------------------------------------------------------------------------
 def render_01_decision_table() -> None:
-    # 6 columns — one per metric — much easier to scan than the original
-    # 3-col format that crammed deployment + cost + p95 + WER into a single cell.
+    # 7 columns — one per decision-relevant metric we graded.
+    # Excluded: p50/p99 latency (p95 is the operational summary), GPU util
+    # (diagnostic), peak GPU memory (captured via OOM walls in tables 02–09).
     gotcha_row = 2  # "no correct option in v1"
     render_table(
         filename="01_decision_table_by_workload_shape.png",
         headers=[
             "Peak load",
             "p95 budget",
-            "Recommended deployment",
-            "Cost / audio-hr",
+            "Deployment",
+            "RTF",
             "p95 actual",
             "WER",
+            "Cost / audio-hr",
         ],
         rows=[
-            ["≤8 concurrent", "Tight (≤2s)", "HF × L4", "$0.027", "1.96s", "1.44%"],
-            ["≤8 concurrent", "Loose (10s+)", "HF × L4", "$0.027", "~14s", "1.44%"],
-            ["32–128 concurrent", "Tight (≤2s)", "No correct option in v1", "—", "—", "—"],
-            ["32–128 concurrent", "Loose", "HF × L4", "$0.027", "52–209s", "1.44%"],
+            ["≤8 concurrent", "Tight (≤2s)", "HF × L4", "0.044", "1.96s", "1.44%", "$0.027"],
+            ["≤8 concurrent", "Loose (10s+)", "HF × L4", "0.044", "~14s", "1.44%", "$0.027"],
+            ["32–128 concurrent", "Tight (≤2s)", "No correct option in v1", "—", "—", "—", "—"],
+            ["32–128 concurrent", "Loose", "HF × L4", "0.044–0.046", "52–209s", "1.44%", "$0.027"],
         ],
-        fig_size=(13, 3.6),
-        col_widths=[0.18, 0.16, 0.22, 0.13, 0.13, 0.10],
+        fig_size=(14, 3.8),
+        col_widths=[0.15, 0.13, 0.20, 0.11, 0.13, 0.10, 0.14],
         cell_highlights={
             # green for winner deployments
             (0, 2): WINNER_BG,
             (1, 2): WINNER_BG,
             (3, 2): WINNER_BG,
-            # amber for the empty-quadrant row across all data cells
+            # amber for the empty-quadrant row across all 7 cells
             (gotcha_row, 0): GOTCHA_BG,
             (gotcha_row, 1): GOTCHA_BG,
             (gotcha_row, 2): GOTCHA_BG,
             (gotcha_row, 3): GOTCHA_BG,
             (gotcha_row, 4): GOTCHA_BG,
             (gotcha_row, 5): GOTCHA_BG,
+            (gotcha_row, 6): GOTCHA_BG,
         },
         cell_bold={
             (0, 2), (1, 2), (3, 2),
-            (gotcha_row, 2),  # "No correct option in v1" bolded
+            (gotcha_row, 2),  # "No correct option in v1"
         },
         text_cols={0, 1, 2},
         row_scale=2.2,
