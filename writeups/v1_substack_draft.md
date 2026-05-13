@@ -92,6 +92,8 @@ Each item is a hook for a follow-up:
 
 ## Three findings worth screenshotting
 
+**Scope of these findings.** Everything below describes v1's measurement regime: single-instance serving on a single GPU, closed-loop concurrent requests at 1-128 in-flight, 30s+ pseudo-clips of clean read audio, on-demand RunPod pricing as of mid-2026. Outside this regime — multi-node fleets, bursty Poisson-distributed traffic, true streaming / incremental decoding, sub-second latency budgets, or hour-long audio — the answer changes, sometimes substantially. Each finding states its scope explicitly and calls out where we expect it to flip; v1.x releases will measure the regimes v1 didn't.
+
 ### Finding 1: The fastest framework is unusable on Whisper today
 
 **vLLM is 16-26× faster than faster-whisper on identical hardware.** At c=8 on A100, vLLM hits RTF 0.0035 (285× real-time) at $0.0048 per audio-hour. The same workload on faster-whisper costs $0.142/audio-hour — vLLM is **30× cheaper**.
@@ -123,13 +125,17 @@ The p95 latency table shows the cost of that serialization clearly: **at c=128, 
 
 **Faster-whisper inherits a softer version of the same limitation.** CTranslate2 doesn't tensor-batch across requests; faster-whisper × A100 RTF is also nearly flat across concurrency at ~0.10. The model-specific-optimization bet wins on per-request speed but doesn't fix the scaling story.
 
-### Finding 3: L4 is the right cost decision for most Whisper workloads
+### Finding 3: For unbatched frameworks, L4 wins cost. For batched frameworks, A100 likely does.
 
-The cheapest correct cell in the entire 30-cell matrix is **HF × L4 at c=8 — $0.0265 per audio-hour with 1.44% WER**. The same configuration on A100 SXM4-80GB costs $0.0997/audio-hour — **3.7× more expensive for identical transcription quality**. The faster-whisper-on-L4 row is similar: ~$0.10/audio-hour vs ~$0.14/audio-hour on A100 for the same cells, and both deliver 4% WER.
+The cheapest *correct* cell in the entire 30-cell matrix is **HF × L4 at c=8 — $0.0265 per audio-hour with 1.44% WER**. The same configuration on A100 SXM4-80GB costs $0.0997/audio-hour — **3.7× more expensive for identical transcription quality**. Faster-whisper has the same shape: ~$0.10/audio-hour on L4 vs ~$0.14 on A100 for comparable cells, both at ~4% WER.
 
-**Why L4 wins on Whisper specifically:** Whisper-large-v3 is small enough (1.5B parameters in FP16 = ~3GB) that the L4's 24GB of VRAM and ~485 TFLOPS of FP16 are not the bottleneck for single-stream inference. The A100's headroom buys you better latency under concurrency and higher batching capacity — both irrelevant when the framework underneath can't batch anyway. Production teams reaching for A100 because "more is better" are paying 3-4× the marginal cost for capacity their inference framework can't capitalize on.
+The math under that: cost-per-audio-hour = `GPU_hourly_cost × RTF`. L4 is ~$0.60/hr; A100 is ~$1.49/hr. For A100 to win on cost, its RTF needs to be more than 2.5× lower than L4's. On HF and faster-whisper, A100 is ~2× faster at best — close, but not enough to overcome the hourly cost ratio.
 
-**Implication:** the decision rule for picking a GPU for Whisper inference is workload-driven, not "default to the biggest GPU." For batch and cost-sensitive workloads (overnight backlog transcription, internal tooling), L4 is the correct default. A100 earns its premium only when you need per-request latency at low concurrency, or when you're running a framework that actually uses the headroom — which today means waiting for vLLM's Whisper integration to be fixed or v1.1's TensorRT-LLM.
+**That math inverts the moment the framework can batch.** vLLM × A100 c=8 is the **single cheapest cell in our entire matrix at $0.0048/audio-hour** — half the cost of vLLM × L4 c=8 ($0.0097), and roughly **5× cheaper than HF × L4 c=8**. The 80GB A100 packs more KV-cache pages than the 24GB L4, and continuous batching scales nonlinearly in cache capacity, so A100's hourly premium gets amortized across many concurrent requests. The catch: vLLM produces 113% WER at that cell (Finding 1), so this cheapest cell is unusable. But the cost *pattern* is real, and it's what we expect to see again with v1.1's Triton + TensorRT-LLM — which keeps Whisper's ASR safeguards intact.
+
+**Scope of this finding.** "L4 wins cost" holds within v1's measurement regime: **unbatched, single-instance serving on a single GPU**. The moment you have a working batched framework — TensorRT-LLM-compiled Triton, a future fixed vLLM, or any other engine that uses the bigger GPU's memory for continuous batching — the cost story likely flips, and A100 wins. v1's data shows this pattern already; vLLM's quality bug obscures it. v1.1 will measure it cleanly.
+
+**Implication for production teams:** if you're deploying HF or faster-whisper today, L4 is the right call. If you're investing in a batched serving stack, don't default to L4 on the strength of this benchmark alone — re-evaluate A100 once the batched framework is in place. Watch for v1.1.
 
 ## Should you self-host at all?
 
