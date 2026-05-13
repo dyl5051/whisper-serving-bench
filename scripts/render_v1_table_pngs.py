@@ -103,42 +103,46 @@ def render_table(
 # Table 01: decision table by workload shape (4 rows)
 # ----------------------------------------------------------------------------
 def render_01_decision_table() -> None:
+    # 6 columns — one per metric — much easier to scan than the original
+    # 3-col format that crammed deployment + cost + p95 + WER into a single cell.
+    gotcha_row = 2  # "no correct option in v1"
     render_table(
         filename="01_decision_table_by_workload_shape.png",
-        headers=["Your peak concurrent load", "Your p95 latency budget", "Best v1 deployment"],
-        rows=[
-            [
-                "Low (≤8 concurrent)",
-                "Tight (≤2s)",
-                "HF × L4 — $0.027/audio-hr,\np95 ~2s, WER 1.44%",
-            ],
-            [
-                "Low (≤8 concurrent)",
-                "Loose (10s+ OK)",
-                "HF × L4 — $0.027/audio-hr,\np95 ~14s, WER 1.44% (same config)",
-            ],
-            [
-                "High (32–128 concurrent)",
-                "Tight (≤2s)",
-                "No correct option in v1.\nHF queues, faster-whisper OOMs,\nvLLM hallucinates.",
-            ],
-            [
-                "High (32–128 concurrent)",
-                "Loose",
-                "HF × L4 — $0.027/audio-hr,\np95 52–209s, WER 1.44%",
-            ],
+        headers=[
+            "Peak load",
+            "p95 budget",
+            "Recommended deployment",
+            "Cost / audio-hr",
+            "p95 actual",
+            "WER",
         ],
-        fig_size=(11, 5),
-        col_widths=[0.22, 0.18, 0.40],
+        rows=[
+            ["≤8 concurrent", "Tight (≤2s)", "HF × L4", "$0.027", "1.96s", "1.44%"],
+            ["≤8 concurrent", "Loose (10s+)", "HF × L4", "$0.027", "~14s", "1.44%"],
+            ["32–128 concurrent", "Tight (≤2s)", "No correct option in v1", "—", "—", "—"],
+            ["32–128 concurrent", "Loose", "HF × L4", "$0.027", "52–209s", "1.44%"],
+        ],
+        fig_size=(13, 3.6),
+        col_widths=[0.18, 0.16, 0.22, 0.13, 0.13, 0.10],
         cell_highlights={
+            # green for winner deployments
             (0, 2): WINNER_BG,
             (1, 2): WINNER_BG,
-            (2, 2): GOTCHA_BG,
             (3, 2): WINNER_BG,
+            # amber for the empty-quadrant row across all data cells
+            (gotcha_row, 0): GOTCHA_BG,
+            (gotcha_row, 1): GOTCHA_BG,
+            (gotcha_row, 2): GOTCHA_BG,
+            (gotcha_row, 3): GOTCHA_BG,
+            (gotcha_row, 4): GOTCHA_BG,
+            (gotcha_row, 5): GOTCHA_BG,
         },
-        cell_bold={(0, 2), (1, 2), (2, 2), (3, 2)},
+        cell_bold={
+            (0, 2), (1, 2), (3, 2),
+            (gotcha_row, 2),  # "No correct option in v1" bolded
+        },
         text_cols={0, 1, 2},
-        row_scale=2.6,
+        row_scale=2.2,
     )
 
 
