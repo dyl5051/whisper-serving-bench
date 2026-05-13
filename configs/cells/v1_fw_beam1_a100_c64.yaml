@@ -1,0 +1,20 @@
+# v1.0.1 experiment: faster-whisper × A100 × c=64, beam_size=1 (greedy).
+# Beam=5 OOMed at this c on A100; beam=1 uses less per-request memory so may fit.
+cell_id: v1_fw_beam1_a100_concurrent_64
+framework: faster_whisper
+model: openai/whisper-large-v3
+gpu: A100-SXM4-80GB
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 64
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 240
+
+adapter_config:
+  device: cuda
+  compute_type: float16
+  language: en
+  beam_size: 1

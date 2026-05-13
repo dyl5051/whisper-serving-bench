@@ -1,0 +1,16 @@
+# v1.0.1 experiment: faster-whisper × A100 × all concurrencies with beam_size=1.
+# Companion sweep to v1_fw_beam1_l4 — see that file's description for context.
+
+name: v1_fw_beam1_a100
+description: |
+  faster-whisper / whisper-large-v3 / LibriSpeech streaming-30s eval,
+  with beam_size=1 (greedy), A100 SXM4-80GB, swept across concurrency
+  {1, 8, 32, 64, 128}. 5 cells. Run after v1_fw_beam1_l4 confirms the
+  beam_size hypothesis, OR skip if v1_fw_beam1_l4 results are decisive.
+
+cells:
+  - configs/cells/v1_fw_beam1_a100_c1.yaml
+  - configs/cells/v1_fw_beam1_a100_c8.yaml
+  - configs/cells/v1_fw_beam1_a100_c32.yaml
+  - configs/cells/v1_fw_beam1_a100_c64.yaml
+  - configs/cells/v1_fw_beam1_a100_c128.yaml

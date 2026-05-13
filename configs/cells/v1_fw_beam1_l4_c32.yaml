@@ -1,0 +1,19 @@
+# v1.0.1 experiment: faster-whisper × L4 × c=32, beam_size=1 (greedy).
+cell_id: v1_fw_beam1_l4_concurrent_32
+framework: faster_whisper
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 32
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 300
+
+adapter_config:
+  device: cuda
+  compute_type: float16
+  language: en
+  beam_size: 1

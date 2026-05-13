@@ -1,0 +1,29 @@
+# v1.0.1 experiment: faster-whisper × L4 × all concurrencies with beam_size=1.
+#
+# v1 used beam_size=5 (openai-whisper default), while the HF adapter uses
+# greedy decoding (transformers' default for model.generate() with no
+# num_beams arg). That made the FW-vs-HF comparison apples-to-oranges
+# on speed — beam=5 is ~3-5× slower per request than beam=1.
+#
+# This sweep re-runs FW × L4 with beam_size=1 to get a clean apples-to-
+# apples comparison against HF × L4. Decision rule:
+#   - If FW beam=1 × L4 is faster than HF × L4 across the board, the
+#     v1 finding "HF wins speed" was an artifact of beam_size confound.
+#     We update the writeup to reflect that FW (CT2-compiled) is the
+#     real speed winner once configured fairly.
+#   - If FW beam=1 × L4 is still slower than HF, then HF's transformers
+#     long-form path is genuinely faster despite PyTorch eager-mode
+#     overhead — a more surprising finding.
+
+name: v1_fw_beam1_l4
+description: |
+  faster-whisper / whisper-large-v3 / LibriSpeech streaming-30s eval,
+  with beam_size=1 (greedy), L4 GPU, swept across concurrency
+  {1, 8, 32, 64, 128}. 5 cells. Companion sweep: v1_fw_beam1_a100.
+
+cells:
+  - configs/cells/v1_fw_beam1_l4_c1.yaml
+  - configs/cells/v1_fw_beam1_l4_c8.yaml
+  - configs/cells/v1_fw_beam1_l4_c32.yaml
+  - configs/cells/v1_fw_beam1_l4_c64.yaml
+  - configs/cells/v1_fw_beam1_l4_c128.yaml

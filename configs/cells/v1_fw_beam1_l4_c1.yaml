@@ -1,0 +1,22 @@
+# v1.0.1 experiment: faster-whisper × L4 × c=1 with beam_size=1 (greedy).
+# The v1 FW cells used beam_size=5 (the openai-whisper default); HF uses
+# greedy. That made the framework comparison apples-to-oranges on speed.
+# This re-run lets us measure CT2's optimization win on equal decoding terms.
+cell_id: v1_fw_beam1_l4_concurrent_1
+framework: faster_whisper
+model: openai/whisper-large-v3
+gpu: L4
+
+workload:
+  pattern: concurrent_streaming
+  concurrency: 1
+  eval_set: librispeech_streaming_30s
+  iterations: 3
+  warmup_requests: 10
+  request_timeout_seconds: 180
+
+adapter_config:
+  device: cuda
+  compute_type: float16
+  language: en
+  beam_size: 1
