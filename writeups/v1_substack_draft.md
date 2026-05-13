@@ -8,15 +8,17 @@ I needed to pick one. I run ML infrastructure at a healthtech startup; we transc
 
 WER over 100% means the framework outputs *more hallucinated words than the reference contained.* The fastest, cheapest cell in the entire matrix is unshippable. The cheapest *correct* deployment turned out to be Hugging Face Transformers on a single NVIDIA L4 — a $0.60/hr GPU you probably weren't planning to use — at **$0.027/audio-hour and 1.44% WER**, regardless of concurrency. Latency degrades from p95 1.96s to 209s as offered load grows from 1 to 128 in-flight requests, but cost and quality stay flat.
 
-In the matrix below, "concurrency" is your workload's **offered load** — how many in-flight requests at peak — not a knob you tune. Identify your expected peak, find the matching row, read the metrics.
+Here's the field at **c=8** — a representative production concurrency (eight simultaneous in-flight requests per node). Every cell has data; no OOMs at this point. All six (framework × GPU) combinations:
 
-`[IMAGE: 01_decision_table_by_workload_shape.png — "Decision table: HF × L4 at each measured concurrency (1, 8, 32, 64, 128). Columns: deployment / RTF / p95 / WER / cost / audio-hour"]`
+`[IMAGE: 01_framework_comparison_at_c8.png — "All six (framework × GPU) deployments at c=8. Columns: deployment / RTF / p95 / WER / cost / notes. HF × L4 row highlighted green (winner). vLLM WER cells highlighted red (broken)."]`
 
-Three things worth pointing out:
+Three things to notice:
 
-- **The framework choice is settled before you look at the rows.** HF × L4 wins at every concurrency we measured. Cost, RTF, and WER are essentially constant down the table — the only thing that changes is p95 latency.
-- **p95 latency scales linearly with concurrency.** ~1.6s at c=1, then +1.6s for every additional in-flight request behind the lock. That's the structural cost of running a single-model PyTorch deployment under concurrent load (see Finding 2 for why).
-- **Tight latency + high concurrency is the empty zone v1 can't fill.** If you need p95 <2s, stay at c=1. If you accept tens of seconds of p95, c≤32 works. v1 has no deployment that delivers both single-digit p95 AND high concurrency simultaneously with correct transcripts — HF queues, faster-whisper OOMs, vLLM hallucinates. That gap is what v1.1 (TensorRT-LLM) is meant to close.
+- **HF × L4 wins on cost AND quality simultaneously.** This isn't a tradeoff — the recommended deployment dominates the field on both axes. faster-whisper is slower and more expensive; vLLM is broken; A100 doesn't earn its premium on unbatched frameworks.
+- **The vLLM rows are the spicy finding.** vLLM × A100 c=8 at $0.0048/audio-hour is *half* the cost of HF × L4. But 113% WER means it outputs more hallucinated words than the reference contained. The cheapest cell in the entire matrix isn't a real deployment. Full details in Finding 1.
+- **A100 doesn't earn its 2.5× hourly premium here.** HF × A100 and faster-whisper × A100 cost 3-4× more than their L4 counterparts for the same quality. A100 wins only emerge with batched serving (which only vLLM does in v1, and vLLM is broken). See Finding 3 for the cost math.
+
+These are the numbers at c=8. For other concurrencies (1, 32, 64, 128), see the per-metric matrix tables further down. The recommendation doesn't change across the range — HF × L4 wins at every concurrency on cost — but tail latency does grow. Finding 2 explains why.
 
 ## Why this benchmark exists
 

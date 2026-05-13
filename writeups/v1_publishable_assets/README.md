@@ -14,7 +14,7 @@ Numbered for filename consistency. All must come from the **current `writeups/v1
 
 | # | filename | section in v1.md | source |
 |---|---|---|---|
-| 01 | `decision_table_by_workload_shape.png` | "The 30-second answer" | 4-row workload-shape table |
+| 01 | `framework_comparison_at_c8.png` | "The 30-second answer" | 6-row framework × GPU comparison at c=8 (snapshot of the field) |
 | 02 | `a100_rtf.png` | "The decision matrix" → "A100 SXM4-80GB" | RTF table |
 | 03 | `a100_p95.png` | same | Latency p95 table |
 | 04 | `a100_wer.png` | same | WER table |

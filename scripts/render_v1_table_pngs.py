@@ -103,40 +103,46 @@ def render_table(
 # Table 01: decision table by workload shape (4 rows)
 # ----------------------------------------------------------------------------
 def render_01_decision_table() -> None:
-    # 6 columns × 5 rows — one row per measured concurrency. Avoids the
-    # arbitrary bucket boundaries (≤8 / 32–128) of an earlier version,
-    # which skipped the c=16/24 region and implied tight latency was
-    # achievable at c=8 (it isn't; HF × L4 c=8 already has p95 13.75s).
-    # The 5-row table matches the actual benchmark grid (1, 8, 32, 64, 128).
+    # Headline table: all 6 (framework × GPU) deployments at c=8.
+    # c=8 is a representative production concurrency: realistic per-node load
+    # for small SaaS, where HF × L4 hits its cheapest cell, and where every
+    # cell has data (no OOMs). The reader sees the recommendation AND the
+    # alternatives in one glance; the spicy vLLM-hallucinates finding lands
+    # immediately (red WER cells) instead of being buried in Finding 1.
     render_table(
-        filename="01_decision_table_by_workload_shape.png",
+        filename="01_framework_comparison_at_c8.png",
         headers=[
-            "Peak concurrent load",
             "Deployment",
             "RTF",
             "p95",
             "WER",
             "Cost / audio-hr",
+            "Notes",
         ],
         rows=[
-            ["c=1 (single-stream)", "HF × L4", "0.0446", "1.96s", "1.44%", "$0.0267"],
-            ["c=8", "HF × L4", "0.0442", "13.75s", "1.44%", "$0.0265"],
-            ["c=32", "HF × L4", "0.0442", "52.09s", "1.44%", "$0.0265"],
-            ["c=64", "HF × L4", "0.0442", "102.11s", "1.44%", "$0.0265"],
-            ["c=128", "HF × L4", "0.0456", "209.12s", "1.44%", "$0.0273"],
+            ["HF × L4", "0.0442", "13.75s", "1.44%", "$0.0265", "cheapest correct cell"],
+            ["HF × A100", "0.0717", "22.48s", "1.44%", "$0.0997", "3.7× cost, identical quality"],
+            ["faster-whisper × L4", "0.1751", "107.12s", "3.68%", "$0.1050", "slower, OOMs at c=32+"],
+            ["faster-whisper × A100", "0.1023", "60.89s", "5.38%", "$0.1422", "slower AND costlier than HF × L4"],
+            ["vLLM × L4", "0.0161", "9.29s", "186%", "$0.0097", "broken — hallucinates"],
+            ["vLLM × A100", "0.0035", "4.61s", "113%", "$0.0048", "broken — also matrix's cheapest cell"],
         ],
-        fig_size=(13, 4.2),
-        col_widths=[0.22, 0.16, 0.12, 0.14, 0.12, 0.16],
+        fig_size=(15, 4.4),
+        col_widths=[0.22, 0.10, 0.12, 0.10, 0.14, 0.30],
         cell_highlights={
-            # all deployment cells green (HF × L4 wins at every concurrency)
-            (0, 1): WINNER_BG,
-            (1, 1): WINNER_BG,
-            (2, 1): WINNER_BG,
-            (3, 1): WINNER_BG,
-            (4, 1): WINNER_BG,
+            # green for the winner row's deployment cell
+            (0, 0): WINNER_BG,
+            # red on vLLM WER cells (broken)
+            (4, 3): BROKEN_BG,
+            (5, 3): BROKEN_BG,
         },
-        cell_bold={(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)},
-        text_cols={0, 1},
+        cell_bold={
+            (0, 0),  # HF × L4 bold
+            (0, 3), (0, 4),  # winner WER + cost bold
+            (4, 3), (5, 3),  # vLLM WER bold (broken)
+            (5, 4),  # cheapest cell cost bold
+        },
+        text_cols={0, 5},
         row_scale=2.0,
     )
 
