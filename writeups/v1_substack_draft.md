@@ -1,88 +1,113 @@
 # Choosing a Whisper serving framework: a 30-cell decision matrix
 
-Whisper-large-v3 has quietly become the default open-source speech-to-text model — if you've used a meeting tool, voice agent, or transcription product in the last two years, there's a good chance Whisper is somewhere in the stack. OpenAI doesn't host large-v3 directly (their hosted Whisper API runs an older variant), so anyone who wants the latest model self-hosts. That means picking a serving framework.
+Whisper is OpenAI's open-source speech-to-text model. If you've used a meeting summarizer, voice assistant, or transcription tool in the last two years, there's a good chance Whisper is doing the actual transcribing — even when the product doesn't advertise it.
 
-I needed to pick one. I run ML infrastructure at a healthtech startup; we transcribe clinician sessions into a structured system of record. Three things matter simultaneously: WER (a transcription error is a clinical-data error), cost (hours of audio per provider per day adds up fast), and operational simplicity. Every Whisper benchmark I could find took at most one of those seriously. So I built one that takes all three.
+Here's the catch: OpenAI doesn't run the *newest* Whisper through their API. Their hosted version uses an older variant. If you want the most accurate Whisper for your product, you have to run it yourself, on your own GPUs.
 
-**What I found: the fastest framework hits 285× real-time at half a cent per audio-hour. Its Word Error Rate at that cell: 113%.**
+Running it yourself means choosing a **serving framework** — the software layer between your app and the model. The main options are **Hugging Face Transformers** (the official, no-frills reference), **faster-whisper** (a community-optimized version that runs the same model through a compiled C++ engine), and **vLLM** (a general-purpose serving engine originally built for large language models). Each one trades off speed, cost, and accuracy differently.
 
-WER over 100% means the framework outputs *more hallucinated words than the reference contained.* The fastest, cheapest cell in the entire matrix is unshippable. The cheapest *correct* deployment turned out to be Hugging Face Transformers on a single NVIDIA L4 — a $0.60/hr GPU you probably weren't planning to use — at **$0.027/audio-hour and 1.44% WER**, regardless of concurrency. Latency degrades from p95 1.96s to 209s as offered load grows from 1 to 128 in-flight requests, but cost and quality stay flat.
+I needed to choose one for production. I run ML infrastructure at a healthtech startup where we transcribe clinical sessions into a structured medical-record system. Three things had to work at the same time:
 
-Here's the field at **c=8** — a representative production concurrency (eight simultaneous in-flight requests per node). Every cell has data; no OOMs at this point. All six (framework × GPU) combinations:
+- **Accuracy.** A wrong word in a transcript is a wrong word in someone's chart. We measure this with **WER (word error rate)** — the percentage of words the transcript gets wrong. Lower is better; published numbers for Whisper-large-v3 on clean speech are around 1-2%.
+- **Cost.** Hours of audio per provider per day across many providers adds up. A few cents per audio-hour becomes real money at scale.
+- **Operational simplicity.** When something breaks at 3am, I want to debug it without learning a brand-new system from scratch.
+
+Most Whisper benchmarks I could find only measured one of those three at a time. So I built one that measured all three — across 3 frameworks, 2 GPUs, and 5 different concurrent-load levels. 30 test runs total.
+
+**What I found: the fastest framework processes audio about 285× faster than real-time — meaning it can transcribe an hour of audio in roughly 13 seconds — for less than half a cent per hour of compute. Its WER at that speed: 113%.**
+
+Yes, over 100%. That means the framework produces *more* wrong or fabricated words than the original audio contained. **The fastest, cheapest configuration in my entire benchmark is unusable.**
+
+The cheapest setup that *actually transcribes correctly* turned out to be the most basic option: **plain Hugging Face Transformers on a single NVIDIA L4 GPU** — a $0.60/hour GPU you probably weren't planning to use for production AI. The numbers:
+
+- **Cost: 2.7 cents per audio-hour.**
+- **Accuracy: 1.44% WER** (close to state-of-the-art for this dataset).
+- **Cost and accuracy stay constant** no matter how many users hit it at once.
+
+The catch: response time gets slower as more users send requests simultaneously. One user gets a 30-second clip back in about 2 seconds. With 128 simultaneous users, the slowest request waits about 3.5 minutes — because every request has to get in line behind the ones in front of it on a single GPU.
+
+Here's what the field looks like at **8 concurrent users** — a realistic load for a small SaaS product. Every framework × GPU combination, all six of them:
 
 `[IMAGE: 01_framework_comparison_at_c8.png — "All six (framework × GPU) deployments at c=8. Columns: deployment / RTF / p95 / WER / cost / notes. HF × L4 row highlighted green (winner). vLLM WER cells highlighted red (broken)."]`
 
-**Three things to notice:**
+A quick note on the column names if any are new:
 
-- **HF × L4 wins cost AND quality simultaneously.** Within the configurations we measured, this isn't a tradeoff — the recommended deployment dominates the field on both axes.
-- **The vLLM rows are the spicy finding.** vLLM × A100 c=8 at $0.0048/audio-hour is *half* the cost of HF × L4. But 113% WER means it outputs more hallucinated words than the reference contained. The cheapest cell in the entire matrix isn't a real deployment. Full details in Finding 1.
-- **A100 doesn't earn its 2.5× hourly premium on unbatched frameworks.** faster-whisper × A100 costs 35% more than × L4 for similar quality. A100 wins emerge only with batched serving (vLLM today — but broken; Triton + TensorRT-LLM in v1.1).
+- **RTF (real-time factor)** = how long it takes to process audio compared to the audio's length. RTF 0.044 means processing 1 second of audio takes 0.044 seconds — about 22× faster than real-time. Lower is faster.
+- **p95** = the wait time for the 95th-percentile slowest request. If p95 is 14 seconds, then 95% of requests come back faster than 14 seconds and 5% are slower.
+- **WER** = word error rate (defined above).
 
-**Two caveats — and why v1.0.1 will redo parts of this analysis:**
+**A few things to notice:**
 
-- **⚠️ HF × A100 numbers are contaminated by host CPU contention.** Our HF × A100 cells ran on a RunPod host where other tenants were hammering CPU. GPU utilization came back at 20-32% (vs ~92% on L4) — the smoking-gun signal that the bottleneck was CPU dispatch, not GPU compute. On a clean A100 host, expect HF × A100 RTF to be roughly *half* what's shown above; the "A100 looks slower than L4 here" anomaly in the HF rows is measurement noise, not a real finding. We took four pod redeployments to find a host quiet enough to even finish the HF × A100 sweep — and even the one we used was still partially contended. **v1.0.1 will re-measure HF × A100 on a clean host.**
+- **Plain HF on the cheap GPU wins on cost AND accuracy at the same time.** That's unusual — normally you pick one or the other. Here you don't have to.
+- **The vLLM rows are the spicy finding.** vLLM × A100 is the cheapest cell in the entire matrix at $0.0048 per audio-hour — about half what HF × L4 costs. But its WER is 113% (more on what that means in Finding 1). It's fast and cheap; it just doesn't transcribe correctly. Don't deploy it.
+- **The expensive GPU doesn't pay off (yet).** An A100 costs about 2.5× more per hour than an L4. For the frameworks that handle one request at a time (HF and faster-whisper), the A100 is only ~2× faster — close, but not enough to make up for the higher hourly cost. The A100 only starts winning when a framework can process many requests together in parallel, which today only vLLM does — and vLLM is broken.
 
-- **⚠️ HF and faster-whisper use different decoding strategies in this benchmark.** HF runs greedy decoding (`transformers.model.generate()` defaults to `num_beams=1` when no beam argument is set); faster-whisper runs `beam_size=5` (openai-whisper's reference default, and what most production faster-whisper deployments use). Beam=5 is roughly 3-5× slower per request than greedy — **a meaningful chunk of HF's apparent speed and cost advantage over faster-whisper is the decoding strategy, not the framework's underlying optimization.** Configured fairly (both at `beam_size=1`), faster-whisper would likely be the cost winner on L4, since CTranslate2's compiled kernels still beat PyTorch eager mode. **v1.0.1 will measure the apples-to-apples comparison; configs are already committed in the repo.**
+**Two important caveats — and why I plan to redo parts of this analysis (v1.0.1):**
 
-**The headline findings survive both caveats**: vLLM hallucinates regardless of host or beam config; HF baseline at 1.44% WER is robust across configurations; the L4-vs-A100 cost comparison is unaffected by beam choice (beam_size is GPU-independent). What's *not* robust is the specific claim "HF beats faster-whisper on speed and cost" — that one needs v1.0.1's clean re-run before it can be trusted in absolute terms.
+- **⚠️ The HF × A100 numbers are contaminated.** On RunPod (the cloud GPU service I used), the "private" GPU you rent actually shares a physical computer with other customers. When those other customers hammer the host CPU, your benchmark slows down — even though *your* GPU is fine. That's what happened on the A100 host I got: my GPU was only 20-32% utilized (vs ~92% on the L4 host), meaning the GPU wasn't even the bottleneck. **On a clean A100 host, the HF × A100 numbers would be roughly half their current size.** When RunPod inventory frees up, I'll re-run on a less-busy host.
+- **⚠️ HF and faster-whisper used different decoding strategies.** Without getting too deep: HF uses *greedy decoding* (always pick the most likely next word). faster-whisper uses *beam search with 5 beams* (try 5 possible word sequences in parallel and pick the best). Beam search is typically more accurate but 3-5× slower per request. **So a meaningful chunk of HF's apparent speed advantage over faster-whisper is just the decoding choice, not the framework itself.** If I run faster-whisper with greedy decoding too, it would probably win on speed. v1.0.1 will re-test that; the configs are already in the repo.
 
-These are the numbers at c=8. For other concurrencies (1, 32, 64, 128), see the per-metric matrix tables further down. The recommendation doesn't change across the range — HF × L4 wins at every concurrency on cost (modulo the caveats above) — but tail latency does grow. Finding 2 explains why.
+**What these caveats don't affect:** vLLM's bad transcripts (which fail regardless of host or decoding strategy). HF's 1.44% WER (consistent across every test). The L4-vs-A100 cost story (depends on hourly rates and basic speed math, independent of these issues).
+
+These numbers are at 8 concurrent users. For other load levels (1, 32, 64, 128), see the per-metric tables further down. The recommendation doesn't change across the range — HF × L4 wins at every load on cost — but tail latency gets worse as load grows. Finding 2 explains why.
 
 ## Why this benchmark exists
 
-Most published Whisper benchmarks measure one of two things: raw model throughput on a single framework with no concurrent load, or a vendor's own serving stack on their own preferred hardware. Neither answers the question production teams actually have: given my workload shape — N concurrent users, M seconds of latency budget, and a hard cost ceiling — which framework gives me the best dollars-per-audio-hour at acceptable tail latency?
+Most published Whisper benchmarks measure one of two things: raw model throughput on a single framework with no concurrent load, or a specific vendor's serving stack on their preferred hardware. Neither answers the question production teams actually have: given my real workload — how many users, what latency budget, what cost ceiling — which framework will give me the best dollars-per-audio-hour without sacrificing accuracy?
 
-This benchmark is built to answer that question. Three serving frameworks, two GPU classes, five concurrency levels under a closed-loop streaming workload, with versioned per-cell results JSONs and a reproduction recipe a stranger can follow.
+This benchmark tries to answer that question. Three serving frameworks, two GPUs, five different concurrent-load levels, plus full raw data and a reproduction recipe so anyone can verify or extend it.
 
-## What we measured
+## What I measured
 
-- **Model**: OpenAI Whisper-large-v3, FP16, English-only, beam size 5. The latest fully open-weights Whisper checkpoint.
-- **Eval audio**: LibriSpeech `test-clean` utterances greedily concatenated within speaker boundaries to ≥30s pseudo-clips. 50 clips averaging 35.5s (max 46s), totaling ~30 minutes of audio. 3 iterations per cell = 150 timed requests.
-- **Frameworks**: Hugging Face Transformers (the unoptimized PyTorch baseline), faster-whisper (CTranslate2-compiled, same weights, optimized C++ execution), and vLLM (general-purpose LLM serving engine with continuous batching and PagedAttention; Whisper integration is recent, v0.6+).
-- **GPUs**: NVIDIA A100 SXM4-80GB (premium, ~$1.49/hr on RunPod on-demand), NVIDIA L4 24GB (cost-effective, ~$0.60/hr).
-- **Concurrency**: 1, 8, 32, 64, 128 closed-loop async workers each pulling from a shared queue.
-- **Metrics per cell**: latency p50/p95/p99, aggregate RTF (real-time factor = wall-clock seconds per second of audio), WER post-normalization with Whisper's `EnglishTextNormalizer`, GPU utilization mean + max sampled at 1 Hz, peak GPU memory, cost-per-audio-hour at RunPod's on-demand pricing snapshot.
+- **Model**: OpenAI Whisper-large-v3, the latest fully open-source Whisper. FP16 precision. English-only.
+- **Eval audio**: 50 audio clips, each about 30-46 seconds long (totaling ~30 minutes of audio). Built by concatenating adjacent utterances from the LibriSpeech audiobook corpus, which has free public ground-truth transcripts.
+- **Frameworks**: Hugging Face Transformers (the basic, official reference); faster-whisper (re-compiled in optimized C++); vLLM (a general-purpose serving engine with smart batching, but with a relatively new Whisper integration).
+- **GPUs**: NVIDIA A100 SXM4-80GB (~$1.49/hour, the heavy-duty option) and NVIDIA L4 24GB (~$0.60/hour, the cost-effective option), both rented from RunPod.
+- **Concurrent load**: 1, 8, 32, 64, and 128 simultaneous users sending requests.
+- **Metrics**: response time (median, 95th percentile, 99th percentile), throughput, accuracy (WER), GPU utilization, peak GPU memory, and cost per audio-hour.
 
-30 cells total (3 frameworks × 2 GPUs × 5 concurrencies). Every cell ran 10 sequential warmup requests excluded from timing, then 3 iterations through the eval set. Median across iterations is the headline number.
+30 total test cells (3 frameworks × 2 GPUs × 5 load levels). Each cell ran 10 warmup requests (excluded from results), then 3 full passes through the eval set. The reported numbers are medians across passes.
 
-## What we deliberately didn't measure
+## What I deliberately didn't measure (and what's coming)
 
-Each item is a hook for a follow-up:
+Each item is a hook for a follow-up release:
 
-- **Ray Serve and NVIDIA Triton.** The original v1 spec was five frameworks. Vanilla Triton (Python backend) duplicates the HF baseline's story without batching primitives, and Ray Serve tests a different axis (serving infrastructure overhead, not inference engine performance). Both are deferred to v1.1+.
-- **Triton with TensorRT-LLM compilation.** TensorRT-LLM's Whisper kernels are reportedly multi-x faster than PyTorch — this is the "easy path vs fast path" comparison and ships in v1.1.
-- **T4 and CPU baselines.** "Is a GPU even worth it for ASR?" gets its own follow-up in v1.2.
-- **Long-form audio and variable-length workloads.** v1's streaming cells use 30s+ pseudo-clips averaging 35.5s. Whisper's chunked-decoding behavior on hour-long audio is where most benchmarks lie; v2 addresses it head-on.
-- **Model variants.** distil-whisper, large-v3-turbo. v2.1.
-- **Open-loop (Poisson) traffic.** v1 is closed-loop (N active users). Bursty traffic produces a different tail latency story; possibly v3.
+- **Ray Serve and basic NVIDIA Triton.** I originally planned to test 5 frameworks, but cut Ray Serve and basic Triton from v1 because they're more about *wrapping* an inference engine than being one themselves. They'll come back in later releases.
+- **Triton with TensorRT-LLM.** NVIDIA's optimized engine for transformer models. The most likely candidate to fill the high-concurrency + tight-latency gap I describe in Finding 2. Coming in v1.1.
+- **Smaller GPUs (T4) and CPU baselines.** Answers "is a GPU even worth it for ASR?" — coming in v1.2.
+- **Longer audio.** I used 30-second-ish clips. Real workloads have hour-long meetings or podcast episodes; how each framework handles chunking matters. Coming in v2.
+- **Smaller Whisper variants.** distil-whisper and whisper-large-v3-turbo trade some accuracy for big speed gains. Coming in v2.1.
+- **Bursty traffic.** I tested steady concurrent load. Real production has spikes. Possibly v3.
 
-## The decision matrix
+## The full data, by metric
 
-### A100 SXM4-80GB
+Eight tables, one per metric per GPU. Skip to whichever section maps to your decision criteria.
 
-**Aggregate RTF (lower is faster)**
+### NVIDIA A100 (premium GPU)
+
+**RTF (lower is faster)**
 
 `[IMAGE: 02_a100_rtf.png — "A100 SXM4-80GB Aggregate RTF, 3 frameworks × 5 concurrencies"]`
 
-**Latency p95 (seconds)**
+**p95 latency (in seconds — the 95th-percentile slowest response)**
 
 `[IMAGE: 03_a100_p95.png — "A100 SXM4-80GB Latency p95"]`
 
-**WER (lower is better; >100% = framework hallucinates more words than reference contains)**
+**WER (over 100% means the framework fabricated more words than the audio contained)**
 
 `[IMAGE: 04_a100_wer.png — "A100 SXM4-80GB WER"]`
 
-**Cost USD per audio-hour (on-demand RunPod)**
+**Cost (USD per hour of audio transcribed)**
 
 `[IMAGE: 05_a100_cost.png — "A100 SXM4-80GB Cost USD per audio-hour"]`
 
-### L4 24GB
+### NVIDIA L4 (cost-effective GPU)
 
-**Aggregate RTF**
+**RTF**
 
 `[IMAGE: 06_l4_rtf.png — "L4 24GB Aggregate RTF"]`
 
-**Latency p95 (seconds)**
+**p95 latency**
 
 `[IMAGE: 07_l4_p95.png — "L4 24GB Latency p95"]`
 
@@ -90,123 +115,135 @@ Each item is a hook for a follow-up:
 
 `[IMAGE: 08_l4_wer.png — "L4 24GB WER"]`
 
-**Cost USD per audio-hour**
+**Cost**
 
 `[IMAGE: 09_l4_cost.png — "L4 24GB Cost USD per audio-hour"]`
 
-**How to read these tables.** Cross-reference latency-p95 against cost. Two worked examples:
+**How to use these tables.** Pick your latency budget, find the rows on the p95 table that meet it, then check the cost table for those same cells. Two worked examples:
 
 `[IMAGE: 10_how_to_read_tables.png — "Two worked examples mapping latency budget → qualifying cells → cheapest winner"]`
 
-`OOM` cells are findings, not omissions: faster-whisper × L4 at c=32+ runs out of memory on the 24GB card because each request holds full 30s context; vLLM × L4 OOMs at c=128 from KV cache pressure.
+`OOM` in any table means "ran out of GPU memory" — faster-whisper × L4 hits this at 32 simultaneous users because the L4 only has 24 GB and each in-flight request claims some of that. vLLM × L4 hits it at 128 users. These aren't omissions; they're real findings about what each framework can structurally handle on each GPU.
 
 ## Three findings worth screenshotting
 
-**Scope of these findings.** Everything below describes v1's measurement regime: single-instance serving on a single GPU, closed-loop concurrent requests at 1-128 in-flight, 30s+ pseudo-clips of clean read audio, on-demand RunPod pricing as of mid-2026. Outside this regime — multi-node fleets, bursty Poisson-distributed traffic, true streaming / incremental decoding, sub-second latency budgets, or hour-long audio — the answer changes, sometimes substantially. Each finding states its scope explicitly and calls out where we expect it to flip; v1.x releases will measure the regimes v1 didn't.
+**Scope.** Everything below applies to my specific test setup: one GPU at a time, steady concurrent load, 30-second-ish clips, on-demand RunPod pricing. Outside that — multi-server fleets, bursty traffic, true real-time streaming, sub-second latency requirements, hour-long audio — the answer might be different. I'll flag where each finding could flip.
 
-### Finding 1: The fastest framework is unusable on Whisper today
+### Finding 1: The fastest framework can't actually transcribe.
 
-**vLLM is 16-26× faster than faster-whisper on identical hardware.** At c=8 on A100, vLLM hits RTF 0.0035 (285× real-time) at $0.0048 per audio-hour. The same workload on faster-whisper costs $0.142/audio-hour — vLLM is **30× cheaper**.
+vLLM is dramatically faster than the alternatives. At 8 concurrent users on an A100, it processes audio at 285× real-time for less than half a cent per audio-hour — about 30× cheaper than faster-whisper on the same hardware.
 
-But the WER tells a different story. **vLLM produces 50-186% WER across every cell on every GPU.** WER over 100% means the framework hallucinates *more words* than the reference transcript contains. On the same LibriSpeech-clean audio that Whisper-large-v3 transcribes at ~1.4% WER through HF or 4% through faster-whisper, vLLM emits entire sentences of fabricated text.
+But its transcripts are wrong. **Across every test cell, vLLM's WER ranges from 50% to 186%.** For comparison: HF Transformers transcribes the same audio at 1.4% WER, faster-whisper hits 3-5%. vLLM is getting more than half the words wrong.
 
-Root cause: vLLM's Whisper integration ships without the standard ASR safeguards — compression-ratio threshold, no-speech threshold, temperature fallback — that openai-whisper and faster-whisper apply by default.
+**Here's why this happens.** When OpenAI released Whisper, they shipped it with several safety checks built into the reference code. The model occasionally produces gibberish — that's a known Whisper failure mode, especially on silence or background noise. To prevent that gibberish from reaching production, openai-whisper's reference code does things like:
 
-**We tested three obvious surface-level mitigations at A100 c=1 before publishing.** None rescued the WER:
+- Detect when the model is "uncertain" and skip those sections
+- Spot repetitive-looking output (a common gibberish pattern) and retry with different settings
+- Score the model's confidence and discard low-confidence chunks
+
+Most production Whisper deployments inherit these checks (openai-whisper does, faster-whisper does, HF can be configured to). **vLLM's version of Whisper skipped them.** Without those guardrails, when the model gets confused — or even just given silence — it produces fluent-sounding gibberish.
+
+I tested three quick fixes before publishing. None of them worked:
 
 `[IMAGE: 11_vllm_hallucination_mitigations.png — "vLLM hallucination mitigation experiment: prompt / crfilter / vad, all WER >95%"]`
 
-Spot-checking the actual transcripts shows what's happening. vLLM × Whisper isn't producing noise or repetition loops — it's emitting coherent English narrative that bears no relation to the audio:
+Looking at the actual transcripts makes the problem obvious:
 
-> Reference (LibriSpeech): *"Concord returned to its place amidst the tents..."*
-> vLLM hypothesis: *"Concerns and fears. By the time I was there I was already in the middle of the night and I was already feeling the heat of the night..."*
+> *Reference (what the audio actually said):* "Concord returned to its place amidst the tents..."
+> *vLLM's transcript:* "Concerns and fears. By the time I was there I was already in the middle of the night and I was already feeling the heat of the night..."
 
-Each mitigation failed for a specific reason. The prompt-injection variant literally completes the prompt itself: given `"The following is a clear English narration of a passage from an audiobook"`, it returned `"...a short version of the original text."` The compression-ratio filter didn't help because the hallucinations aren't repetition loops — they're well-formed novel sentences that compress at normal English-prose ratios. Silero-VAD didn't help because stripping silence didn't reduce the hallucination rate; the model was generating fluent text regardless of what (or whether) it heard.
+These are perfectly coherent English sentences with nothing to do with the audio. The model is making things up. When I added a prompt to anchor the model, it just started completing the prompt instead. When I filtered out repetitive output, the gibberish came through anyway because it isn't repetitive — it's varied, well-formed novel sentences. When I stripped silence from the audio first, it didn't help, because the gibberish appears on speech too.
 
-**What's broken inside the integration is hard to diagnose without instrumenting vLLM itself.** It could be audio-embedding routing into the decoder; it could be that openai-whisper's ASR safeguards (`no_speech_threshold`, `compression_ratio_threshold`, temperature fallback) interact with continuous batching in ways the upstream Whisper port didn't account for; it could be both. We didn't try to fix vLLM internals — we tested whether anything reachable from the standard OpenAI HTTP API could rescue the output. Nothing could.
+**The fix can't come from outside vLLM.** It needs to happen inside the engine itself — either fixing how audio is fed to the model, or adding back the safety checks that openai-whisper has. Until that lands, **don't use vLLM for Whisper, no matter how good the throughput numbers look.** I'll re-test as soon as upstream ships a fix.
 
-**Operational conclusion: don't deploy vLLM × Whisper today.** The throughput numbers are real; the transcripts they produce aren't. Watch the vLLM repo for upstream fixes, and rerun the benchmark when something lands.
+### Finding 2: The basic Hugging Face setup doesn't scale up.
 
-### Finding 2: HF baseline doesn't scale with concurrency
+HF Transformers processes one request at a time on a single GPU. It can't safely handle multiple requests in parallel — PyTorch's `generate()` function isn't built for that, and trying it actually corrupts the GPU's state and crashes it. So when multiple users hit a basic HF deployment simultaneously, they line up behind each other.
 
-**HF baseline RTF is flat from c=1 to c=128 at ~0.044 on L4 — concurrency buys you zero throughput.** That's not a bug; it's the structural fingerprint of naive single-model serving. PyTorch's `model.generate()` is not thread-safe; concurrent calls corrupt CUDA state and crash the GPU with a device-side assert. Realistic naive deployment therefore lock-serializes concurrent requests: N submissions queue through one model on one GPU.
+The result: **adding more concurrent users doesn't get you more transcripts per hour.** It just makes the wait longer.
 
-The p95 latency table shows the cost of that serialization clearly: **at c=128, HF p95 is 209 seconds on L4 and 327 seconds on A100.** Submit a request when 127 others are ahead of you and you wait minutes. Throughput is constant; tail latency grows linearly with queue depth.
+The numbers show this clearly. At 1 user, a 30-second clip takes about 2 seconds to transcribe. At 8 simultaneous users, the worst-case wait is about 14 seconds. At 128 simultaneous users, the worst case is 3.5 minutes — because every request has to wait its turn behind 127 others.
 
-**Implication:** this is *the* gap that batched (vLLM continuous batching) and replicated (Ray Serve multi-replica) frameworks fill in production. If your workload involves high concurrency, the HF baseline's flat-throughput / linear-latency profile is your baseline cost of *not* using a serving framework.
+**This is exactly the problem that fancier serving frameworks are designed to solve.** vLLM batches many requests into a single forward pass on the GPU, so they actually run in parallel. Ray Serve runs multiple copies of the model behind a load balancer, so users get spread across replicas. Both close the gap that HF leaves open. Neither is in v1 — vLLM is broken (Finding 1), Ray Serve is deferred to v1.2.
 
-**Faster-whisper inherits a softer version of the same limitation.** CTranslate2 doesn't tensor-batch across requests; faster-whisper × A100 RTF is also nearly flat across concurrency at ~0.10. The model-specific-optimization bet wins on per-request speed but doesn't fix the scaling story.
+**Faster-whisper has the same scaling problem in a milder form.** It also processes one request at a time per GPU (the C++ engine underneath doesn't batch across requests). So if you need to handle many simultaneous users on one GPU, neither HF nor faster-whisper is a long-term answer — you need a framework designed for batching.
 
-### Finding 3: For unbatched frameworks, L4 wins cost. For batched frameworks, A100 likely does.
+### Finding 3: The cheaper GPU wins on cost — but only because the frameworks can't batch.
 
-The cheapest *correct* cell in the entire 30-cell matrix is **HF × L4 at c=8 — $0.0265 per audio-hour with 1.44% WER**. The same configuration on A100 SXM4-80GB costs $0.0997/audio-hour — **3.7× more expensive for identical transcription quality**. Faster-whisper has the same shape: ~$0.10/audio-hour on L4 vs ~$0.14 on A100 for comparable cells, both at ~4% WER.
+The cheapest correct cell in the whole benchmark is HF on a single L4: **2.65 cents per audio-hour at 1.44% WER**. The same setup on the more expensive A100 costs **9.97 cents per audio-hour** — almost 4× more — for identical quality. Faster-whisper shows the same pattern: ~10 cents on L4 vs ~14 cents on A100, both at similar accuracy.
 
-The math under that: cost-per-audio-hour = `GPU_hourly_cost × RTF`. L4 is ~$0.60/hr; A100 is ~$1.49/hr. For A100 to win on cost, its RTF needs to be more than 2.5× lower than L4's. On HF and faster-whisper, A100 is ~2× faster at best — close, but not enough to overcome the hourly cost ratio.
+**Why? Quick math:** cost-per-audio-hour = GPU's hourly rate × how long it takes to process the audio. An L4 costs about $0.60/hour; an A100 costs about $1.49/hour. The A100 is roughly 2× faster per request than the L4 — but it's 2.5× more expensive to rent. So the speed gain doesn't quite cover the price gap, and you end up paying *more* per hour of audio.
 
-**That math inverts the moment the framework can batch.** vLLM × A100 c=8 is the **single cheapest cell in our entire matrix at $0.0048/audio-hour** — half the cost of vLLM × L4 c=8 ($0.0097), and roughly **5× cheaper than HF × L4 c=8**. The 80GB A100 packs more KV-cache pages than the 24GB L4, and continuous batching scales nonlinearly in cache capacity, so A100's hourly premium gets amortized across many concurrent requests. The catch: vLLM produces 113% WER at that cell (Finding 1), so this cheapest cell is unusable. But the cost *pattern* is real, and it's what we expect to see again with v1.1's Triton + TensorRT-LLM — which keeps Whisper's ASR safeguards intact.
+**This math flips the moment a framework can batch requests together.** If a framework can process 8 requests in a single forward pass instead of 8 separate ones, the A100's bigger memory lets it hold many more requests in flight at the same time. Now the higher hourly rate pays for itself — you transcribe many more hours of audio per hour of GPU rental.
 
-**Scope of this finding.** "L4 wins cost" holds within v1's measurement regime: **unbatched, single-instance serving on a single GPU**. The moment you have a working batched framework — TensorRT-LLM-compiled Triton, a future fixed vLLM, or any other engine that uses the bigger GPU's memory for continuous batching — the cost story likely flips, and A100 wins. v1's data shows this pattern already; vLLM's quality bug obscures it. v1.1 will measure it cleanly.
+The clearest example is vLLM. vLLM × A100 at 8 concurrent users is **the single cheapest cell in the entire matrix at $0.0048 per audio-hour** — half what vLLM × L4 costs, and 5× cheaper than HF × L4. The 80 GB A100 packs many more requests into each batch than the 24 GB L4 can. The hourly premium becomes a bargain.
 
-**One more caveat — HF and faster-whisper run with different decoding strategies in this benchmark.** HF uses greedy decoding (`transformers.model.generate()` defaults to `num_beams=1` when no beam argument is passed). faster-whisper uses `beam_size=5` (openai-whisper's reference default, and what most production faster-whisper deployments use). Beam=5 is roughly 3-5× slower per request than greedy, so **a meaningful chunk of HF's apparent speed and cost advantage over faster-whisper is the decoding strategy, not the framework's underlying optimization.** Configured fairly (both at beam=1), faster-whisper would likely be the cost winner on L4, since CTranslate2's compiled kernels still beat PyTorch eager mode. The L4-vs-A100 finding is unaffected by this — beam choice is independent of GPU — but the HF-vs-faster-whisper framing in v1 should be read as "with each framework's standard deployment defaults" rather than "in absolute terms." v1.0.1 will measure the apples-to-apples comparison; configs are committed in the repo.
+The catch (from Finding 1) is that vLLM at that cell produces 113% WER — so this cheapest cell isn't usable. But the cost *pattern* is real. v1.1 will test Triton + TensorRT-LLM, which keeps Whisper's safety checks intact while also batching efficiently. I expect Triton × A100 to win on cost once it lands.
 
-**Implication for production teams:** if you're deploying HF or faster-whisper today, L4 is the right call. If you're investing in a batched serving stack, don't default to L4 on the strength of this benchmark alone — re-evaluate A100 once the batched framework is in place. Watch for v1.1 (Triton + TensorRT-LLM) and v1.0.1 (apples-to-apples faster-whisper).
+**What this means for picking a GPU today:**
+
+- If you're using HF or faster-whisper (basic setups, one request at a time), use an L4. The expensive GPU isn't worth it.
+- If you're investing in a batched serving stack (vLLM eventually, or Triton + TensorRT-LLM soon), evaluate the A100. The cost story flips.
+- The L4-vs-A100 question depends on your framework choice, not on absolute hardware preference.
 
 ## Should you self-host at all?
 
-The 30-cell matrix answers "which self-hosted framework wins." It doesn't answer the prior question: should you self-host Whisper in the first place, or just use a managed service? For most teams, that's the more important decision.
+This benchmark answers "which self-hosted framework wins." It doesn't answer the more important prior question: **should you self-host at all, or use a paid managed service?**
 
-Approximate managed-STT pricing as of mid-2026 (verify before quoting; these change quarterly):
+For comparison, here's roughly what managed speech-to-text services charge as of mid-2026:
 
 `[IMAGE: 12_managed_stt_pricing.png — "Managed STT pricing: AWS, Google, Azure, OpenAI, Deepgram, AssemblyAI"]`
 
-Compared to the cheapest self-hosted cell (**HF × L4 at $0.027/audio-hour**), Deepgram and AssemblyAI are ~13-16× more expensive, and AWS Transcribe is ~53× more expensive. *On paper*, self-hosting wins by an order of magnitude.
+Compared to the cheapest self-hosted setup ($0.027/audio-hour), Deepgram and AssemblyAI are 13-16× more expensive, OpenAI's Whisper API is 13× more expensive, and AWS Transcribe is 53× more expensive. *On paper*, self-hosting wins by an order of magnitude.
 
-What the $/audio-hour comparison hides:
+But the $/audio-hour comparison hides real things:
 
-- **Self-hosted price is best-case.** It assumes 100% GPU utilization, no cold starts, no autoscaling friction, no replica overhead, no failed-request retries, no idle time between requests. Real-world utilization on a single L4 with bursty traffic might be 30-50%, which roughly doubles or triples your effective $/audio-hour.
-- **Self-hosted price excludes operational cost.** Engineering time to maintain the deployment (CUDA upgrades, framework version bumps, capacity planning, on-call), monitoring infra, multi-region failover, audit logs — all of that is "free" with managed and meaningful with self-hosted. At small scale that's the larger line item.
-- **Managed services bundle reliability and SLAs.** Deepgram quotes 99.9% uptime; self-hosted on a single Pod is whatever your provider's pod-level reliability is (in our experience, "varies").
-- **Compliance and data residency.** Some industries (healthtech, gov, finance) need on-prem or VPC-controlled inference where managed services aren't an option. That decision is made before cost enters the picture.
+- **The self-hosted price is the best case.** It assumes the GPU is 100% utilized — no idle time, no cold starts, no autoscaling friction. In real production with bursty traffic, a single L4 might only be 30-50% utilized on average, which doubles or triples your effective cost.
+- **The self-hosted price doesn't include engineering cost.** Someone has to keep the deployment running — CUDA upgrades, framework version bumps, on-call rotation, monitoring. At small scale, that engineering time is the bigger line item.
+- **Managed services bundle reliability and SLAs.** Deepgram promises 99.9% uptime; a single self-hosted pod has whatever uptime your cloud provider gives you (in my experience: "varies").
+- **Some industries can't use managed services at all.** Healthtech, government, finance — anywhere data residency or HIPAA-like compliance matters — the audio can't leave your VPC, even if managed would be cheaper.
 
-**The decision rule:** self-host if you have (a) high sustained volume that amortizes the operational cost across many audio-hours, OR (b) compliance / data-residency requirements that managed services can't meet. Otherwise, managed services almost always win on total cost of ownership at small-to-medium scale.
+**My rule of thumb:** self-host if you have either (a) high sustained volume that amortizes the engineering cost across many audio-hours, or (b) compliance requirements that take managed services off the table. Otherwise managed almost always wins on total cost of ownership.
 
-*Author's note: this benchmark was motivated by case (b). In healthtech infrastructure, clinician audio can't leave the VPC, so managed services aren't on the table even when they'd be cheaper on paper. Your situation may differ — and if (a) and (b) don't apply to you, the right answer is probably a managed provider.*
+*Author's note: this benchmark exists because of case (b). In our healthtech setup, clinician audio can't leave the VPC, so managed services aren't an option even when they'd be cheaper. Your situation may be different — and if neither (a) nor (b) applies, the right answer is probably a managed provider.*
 
 ## Methodology in 90 seconds
 
-The four most-defensible measurement choices:
+The four most-defensible measurement choices, in plain English:
 
-1. **Closed-loop concurrency** — N active workers each waiting for their previous response before sending the next. Models "N concurrent users actively using the system," which matches real ASR usage patterns better than open-loop Poisson arrivals would for this use case.
-2. **Identical text normalization** via Whisper's own `EnglishTextNormalizer` — different frameworks emit different default punctuation, casing, and number formatting; unnormalized WER comparisons are not meaningful. WER is computed by `jiwer` against the normalized hypothesis and reference.
-3. **Warmup excluded, iterations median** — 10 sequential warmup requests precede each cell to load the model, allocate GPU memory, and populate any framework-internal caches; they don't count toward the headline. Each cell then runs 3 iterations through the full eval set; median across iterations is the headline, standard deviation is in the per-cell JSON.
-4. **Failures are findings** — OOM at high concurrency, framework refusing a config, request timeouts — are recorded as cell outcomes (`degraded`, `error`, `unsupported`) and emitted to the results JSON. Never silently dropped.
+1. **I tested with steady concurrent users, not bursty traffic.** Each "concurrent user" sends a request, waits for the response, then sends the next. This models "N active users using the system right now" reasonably well, though it doesn't capture the spikiness of real production traffic.
+2. **I normalized transcripts before comparing them to references.** Different frameworks output different punctuation, capitalization, and number formats. Without normalizing, I'd be measuring "does the framework spell out 'four' or write '4'" rather than "did it get the words right." I used Whisper's own built-in normalizer for consistency.
+3. **I excluded warmup runs.** Every test cell first runs 10 throwaway requests to load the model into GPU memory and warm up caches. Those don't count. Then I ran 3 full passes through the eval set and report the median.
+4. **Failures count.** If a framework runs out of memory at 128 concurrent users, that's a real finding, not an omission. Every test cell produces a results JSON even when things go wrong.
 
-Two caveats shipping with v1:
+Full methodology details are in the GitHub repo's `docs/METHODOLOGY.md`.
 
-- **HF × A100 wall-clock numbers carry ~1.5-2.3× host-contention bias.** RunPod's US-MO-1 A100 inventory was running with noisy CPU neighbors during data collection; GPU utilization on HF A100 cells came back at 20-32% (vs L4's ~92%) — clear signal that the bottleneck was CPU, not GPU. Within-sweep relationships (WER stability, RTF flatness across concurrencies, linear p95 scaling) are correct and reproducible; absolute wall-clock numbers should be read as upper bounds.
-- **WER on LibriSpeech-clean derived audio is unrealistically low** for production speech (which is messier — accents, noise, overlapping speakers). WER here is a sanity check that the framework didn't break the model, not a model-accuracy claim.
+**Two limitations worth flagging:**
 
-## Reproduce in under an hour
+- The HF × A100 wall-clock numbers are inflated by the host-CPU-contention issue I called out earlier. The relative pattern (HF is flat across concurrency, vLLM is fast but wrong, etc.) is still right — only the absolute numbers shift.
+- LibriSpeech audio is studio-quality audiobook narration. Real production speech is messier (accents, noise, overlapping speakers). The WER numbers here are sanity checks — "did the framework break the model?" — not predictions of accuracy on noisy real-world audio.
 
-Full reproduction recipe, raw JSONs, methodology doc, per-cell configs: **[github.com/dyl5051/whisper-serving-bench](https://github.com/dyl5051/whisper-serving-bench)**
+## Reproduce it yourself
 
-Every cell runs end-to-end from a single Docker container. The harness produces a versioned per-cell JSON with full provenance: git SHA, Docker tag, GPU model + driver version, hostname, Python version, every per-request timestamp + transcription + reference. If your reproduction differs from ours by more than the standard deviation we report, open an issue. If it differs by a lot, we want to know.
+The full repo (code, data, methodology, raw per-cell JSONs, decision matrix): **[github.com/dyl5051/whisper-serving-bench](https://github.com/dyl5051/whisper-serving-bench)**
 
-## What's next, and the cadence
+Every cell runs end-to-end inside a Docker container. The harness records git SHA, GPU model, driver version, hostname, Python version, and every per-request timestamp + transcript + reference. If your reproduction differs from mine by more than the standard deviation I report, please open an issue.
 
-- **v1.0.1** (target: as soon as RunPod CPU contention in US-MO-1 frees up — likely off-peak hours): surgical re-runs to address the two caveats called out under the headline table. (1) Re-run HF × A100 on a clean host (existing configs, no code changes; we just need a pod with quiet neighbors). (2) Re-run faster-whisper × {L4, A100} at `beam_size=1` to give the HF-vs-faster-whisper comparison apples-to-apples decoding (configs already committed in the repo). No new methodology, no eval-set changes — ~$2 in compute. Expected outcome: tighten the L4-vs-A100 reading and probably invalidate the "HF wins on speed" framing in favor of "faster-whisper at beam=1 wins on speed; HF wins on quality."
-- **v1.1** (target: 1-2 weeks from v1): Triton + TensorRT-LLM. The "easy path vs fast path" comparison — and the most likely candidate to fill the high-concurrency + tight-latency empty quadrant.
-- **v1.2** (target: 2-3 weeks from v1): Ray Serve + T4 + CPU baselines. Tests serving-infra overhead and the "is a GPU worth it for ASR" question.
-- **v2** (target: 4-6 weeks from v1): Long-form audio + variable input lengths + messier datasets (TED-LIUM, Common Voice).
-- **v2.1**: distil-whisper + whisper-large-v3-turbo — the accuracy-vs-cost frontier across model sizes.
+## What's next
 
-Each release ships its own writeup. Public iteration over a single big drop — the deadlines force shipping discipline.
+- **v1.0.1** (target: as soon as RunPod CPU contention frees up): the two caveat re-runs from earlier — HF × A100 on a clean host, and faster-whisper at greedy decoding on both GPUs. Configs are already committed to the repo. ~$2 in compute.
+- **v1.1** (target: 1-2 weeks): Triton + TensorRT-LLM. NVIDIA's optimized serving stack — the most likely candidate to fill the "high concurrency + tight latency" gap that v1 can't fill.
+- **v1.2** (target: 2-3 weeks): Ray Serve + T4 + CPU baselines. Tests fleet-level scaling and answers "is a GPU even worth it for ASR?"
+- **v2** (target: 4-6 weeks): Longer audio + variable input lengths + messier datasets (TED-LIUM, Common Voice).
+- **v2.1**: distil-whisper + whisper-large-v3-turbo — smaller, faster Whisper variants. The accuracy-vs-speed frontier across model sizes.
+
+Each release gets its own writeup. Iterating in public on a tight cadence rather than dropping a finished artifact months from now.
 
 ## Acknowledgments
 
-This benchmark stands on the work of: the OpenAI Whisper paper authors and the original openai-whisper reference implementation; Hugging Face Transformers for hosting the canonical PyTorch port; Guillaume Klein and the faster-whisper team for the CTranslate2 re-implementation; the vLLM team for the continuous-batching engine; and NVIDIA for the open Triton and TensorRT-LLM tooling we'll be using in v1.1.
+This benchmark stands on the work of: the OpenAI Whisper paper authors and the original openai-whisper reference; Hugging Face Transformers for hosting the canonical PyTorch port; Guillaume Klein and the faster-whisper team for the CTranslate2 re-implementation; the vLLM team for the continuous-batching engine; and NVIDIA for the open Triton and TensorRT-LLM tooling coming in v1.1.
 
-Repo, raw JSONs, methodology, and per-cell configs: **[github.com/dyl5051/whisper-serving-bench](https://github.com/dyl5051/whisper-serving-bench)**
+Repo: **[github.com/dyl5051/whisper-serving-bench](https://github.com/dyl5051/whisper-serving-bench)**
 
 Corrections and reproductions welcome via GitHub issues — the artifact is the repo, not just this post.
 
